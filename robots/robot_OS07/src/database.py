@@ -14,7 +14,9 @@ from typing import Any
 
 import oracledb
 
-from config import CLIENT_PATH, DSN_DB, SENHA_DB, USUARIO_DB
+from config import CLIENT_PATH, COMPUTADOR_ROBO, DSN_DB, SENHA_DB, USUARIO_DB
+
+ROBOT_ID = 11
 
 
 def init_oracle_client() -> None:
@@ -83,14 +85,14 @@ WHERE OS_RPA_NOTA_07.STATUS = 100
            -- estab <> 67 and
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 21
            -- and notaconf in ('255','270','232','314', '275', '285', '284')
-            AND  and notaconf in ('225,232)
+            AND   notaconf in ('225','232')
             and ieemitente is not null
            -- and chaveacesso ='35260608032953000143550010000004221860859264'
         )
         OR
         (
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) >= 23 
-            and notaconf in ('255','270','232','314', '275') 
+            and notaconf in ('225','232') 
         )
       )
 ORDER BY
@@ -133,3 +135,83 @@ def buscar_estab_logado(connection: oracledb.Connection) -> int:
             return 0
 
         return int(row[0])
+
+
+def buscar_U_ROBOT_LOG_EXECUCAO(cursor: Any) -> tuple[Any, ...] | None:
+    """Retorna um robô que esteja EXECUTANDO no computador informado."""
+    cursor.execute(
+        """
+        SELECT
+            u_log.u_robot_log_id,
+            u_log.u_robot_id,
+            u_log.status,
+            u.nome,
+            u.descricao,
+            u.prioridade,
+            u_log.dtinicializacao
+        FROM u_robot_log u_log
+        INNER JOIN u_robot u
+            ON u.u_robot_id = u_log.u_robot_id
+        WHERE u_log.status = 'EXECUTANDO'
+          AND u_log.computador = :comp
+        """,
+        {"comp": COMPUTADOR_ROBO},
+    )
+    return cursor.fetchone()
+
+
+def buscar_U_ROBOT_NEXT(cursor: Any) -> tuple[Any, ...] | None:
+    """Retorna o primeiro robô PENDENTE da fila (somente leitura)."""
+    cursor.execute(
+        """
+        SELECT
+            u_log.u_robot_log_id,
+            u_log.u_robot_id,
+            u_log.status,
+            u.nome,
+            u.descricao,
+            u.prioridade,
+            u_log.dtinicializacao
+        FROM u_robot_log u_log
+        INNER JOIN u_robot u
+            ON u.u_robot_id = u_log.u_robot_id
+        WHERE u_log.status = 'PENDENTE'
+          -- AND u_log.computador = :comp
+        ORDER BY u_log.dtinicializacao
+        FETCH FIRST 1 ROW ONLY
+        """,
+        #  {"comp": COMPUTADOR_ROBO},
+    )
+    return cursor.fetchone()
+
+
+def marcar_executando(connection: oracledb.Connection, log_id: int) -> None:
+    """Muda o status da tarefa de PENDENTE para EXECUTANDO."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE u_robot_log
+               SET status          = 'EXECUTANDO',
+                   COMPUTADOR       = :comp,
+                   dtinicializacao = SYSTIMESTAMP
+             WHERE u_robot_log_id  = :id
+               AND status          = 'PENDENTE'
+            """,
+            {"id": log_id, "comp": COMPUTADOR_ROBO},
+        )
+        connection.commit()
+
+
+def marcar_concluido(connection: oracledb.Connection, log_id: int) -> None:
+    """Muda o status da tarefa para CONCLUIDO com timestamp de finalização."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE u_robot_log
+               SET status        = 'CONCLUIDO',
+                   dtfinalizacao = SYSTIMESTAMP
+             WHERE u_robot_log_id = :id
+            """,
+            {"id": log_id},
+        )
+        connection.commit()

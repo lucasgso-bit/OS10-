@@ -16,13 +16,17 @@ no coordination needed between machines.
 
 from __future__ import annotations
 
+import ctypes
 import importlib
 import logging
 import signal
 import socket
+import threading
 import time
 
 from core.database import (
+    buscar_executando,
+    check_task_status,
     claim_task,
     complete_task,
     fail_task,
@@ -35,9 +39,23 @@ from core.database import (
 
 logger = logging.getLogger(__name__)
 
-_SLEEP_IDLE = 30      # seconds to wait when queue is empty
-_SLEEP_ERROR = 10     # seconds to wait after an unexpected error
-_HEARTBEAT_EVERY = 30 # seconds between heartbeat updates
+_SLEEP_IDLE = 30       # seconds to wait when queue is empty
+_SLEEP_ERROR = 10      # seconds to wait after an unexpected error
+_HEARTBEAT_EVERY = 30  # seconds between heartbeat updates
+_INTERRUPT_CHECK = 180 # seconds between interrupt checks (3 minutes)
+
+
+class _RobotCancelledError(BaseException):
+    """Injected into the robot thread when an interrupt is detected in U_ROBOT_LOG."""
+
+
+def _inject_exception(thread_id: int, exc_type: type) -> bool:
+    """Raise exc_type asynchronously inside the target thread. Returns True on success."""
+    res = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+        ctypes.c_ulong(thread_id),
+        ctypes.py_object(exc_type),
+    )
+    return res == 1
 
 
 class WorkerAgent:
@@ -82,6 +100,17 @@ class WorkerAgent:
                 heartbeat(conn, self.name)
                 self._last_heartbeat = now
 
+            executando = buscar_executando(conn, self.name)
+            if executando:
+                logger.debug(
+                    "Robot '%s' (id=%d) already EXECUTANDO on computer '%s' — skipping",
+                    executando["nome"],
+                    executando["u_robot_id"],
+                    self.name,
+                )
+                time.sleep(_SLEEP_IDLE)
+                return
+
             task = claim_task(conn, self.name)
 
         if not task:
@@ -96,20 +125,54 @@ class WorkerAgent:
 
         logger.info("Starting robot_id=%d log_id=%d", robot_id, log_id)
 
-        try:
-            module = importlib.import_module(f"robots.robot_{robot_id:03d}.run")
-            robot = module.Robot(task)
-            robot.run()
+        robot_exc: list[BaseException] = []
+        done = threading.Event()
 
-            with get_connection() as conn:
-                complete_task(conn, log_id)
+        def _run() -> None:
+            try:
+                module = importlib.import_module(f"robots.robot_{robot_id:03d}.run")
+                robot = module.Robot(task)
+                robot.run()
+            except _RobotCancelledError:
+                pass
+            except BaseException as exc:  # noqa: BLE001
+                robot_exc.append(exc)
+            finally:
+                done.set()
 
-            logger.info("robot_id=%d log_id=%d finished OK", robot_id, log_id)
+        t = threading.Thread(target=_run, name=f"robot-{robot_id}-{log_id}", daemon=True)
+        t.start()
 
-        except Exception as exc:
-            logger.exception("robot_id=%d log_id=%d FAILED", robot_id, log_id)
+        # Poll U_ROBOT_LOG every 3 minutes while the robot runs.
+        # If the status is no longer EXECUTANDO, the robot was interrupted externally.
+        while not done.wait(_INTERRUPT_CHECK):
+            try:
+                with get_connection() as conn:
+                    status = check_task_status(conn, log_id)
+            except Exception:
+                logger.warning("Could not check interrupt status for log_id=%d", log_id)
+                continue
+
+            if status != "EXECUTANDO":
+                logger.info(
+                    "log_id=%d status changed to '%s' — interrupting robot_id=%d",
+                    log_id, status, robot_id,
+                )
+                _inject_exception(t.ident, _RobotCancelledError)
+                done.wait(15)  # give the robot up to 15 s to clean up
+                logger.info("robot_id=%d log_id=%d interrupted", robot_id, log_id)
+                return  # status was already updated externally — nothing else to do
+
+        # Robot finished naturally; update status based on outcome.
+        if robot_exc:
+            exc = robot_exc[0]
+            logger.exception("robot_id=%d log_id=%d FAILED", robot_id, log_id, exc_info=exc)
             with get_connection() as conn:
                 fail_task(conn, log_id, str(exc))
+        else:
+            logger.info("robot_id=%d log_id=%d finished OK", robot_id, log_id)
+            with get_connection() as conn:
+                complete_task(conn, log_id)
 
     def _go_offline(self) -> None:
         try:

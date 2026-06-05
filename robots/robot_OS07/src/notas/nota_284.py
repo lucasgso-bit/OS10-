@@ -1,4 +1,4 @@
-﻿"""
+"""
 Process NOTACONF 284 notes.
 
 Developed by: Matheus Correa

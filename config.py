@@ -9,7 +9,10 @@ Version: 1.0.0
 """
 
 from pathlib import Path
+import socket
 import sys
+import socket
+import getpass
 
 from dotenv import load_dotenv
 import os
@@ -29,3 +32,10 @@ DSN_DB = os.getenv("DSN_DB", "")
 CLIENT_PATH = os.getenv("CLIENT_PATH", "")
 
 AGRO_EXE = os.getenv("AGRO_EXE", r"C:\Viasoft\Client\Agro\agro3c.exe")
+COMPUTADOR_ROBO: str = getpass.getuser()
+AGRO_USUARIO = os.getenv("AGRO_USUARIO", "RPA.OS07")
+AGRO_SENHA = os.getenv("AGRO_SENHA", "")
+
+SMTP_HOST = os.getenv("SMTP_HOST", "")
+EMAIL_FROM = os.getenv("EMAIL_FROM", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")

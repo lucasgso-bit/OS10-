@@ -19,7 +19,14 @@ from robots.robot_OS07.src.agro_alerts import (
 )
 from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS07.src.agro_login import login_agro
-from robots.robot_OS07.src.database import buscar_notas_pendentes, get_connection
+from robots.robot_OS07.src.database import (
+    buscar_notas_pendentes,
+    buscar_U_ROBOT_LOG_EXECUCAO,
+    buscar_U_ROBOT_NEXT,
+    get_connection,
+    marcar_concluido,
+    marcar_executando,
+)
 from robots.robot_OS07.src.nota_router import process_note_by_config
 from robots.robot_OS07.src.replacement_estab import (
     switch_establishment,
@@ -27,11 +34,53 @@ from robots.robot_OS07.src.replacement_estab import (
 )
 
 
+_INTERRUPT_CHECK_INTERVAL = 180  # 3 minutos
+
+
+def _esta_interrompido() -> bool:
+    """Retorna True se o robô não está mais EXECUTANDO em U_ROBOT_LOG."""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            return buscar_U_ROBOT_LOG_EXECUCAO(cursor) is None
+
+
+def _reiniciar_agro() -> None:
+    """Mata e reinicia o Agro, faz login e confirma popups iniciais."""
+    print("Reiniciando Agro...")
+    kill_agro_process("Agro3C.exe")
+    start_agro(AGRO_EXE)
+    time.sleep(5)
+    login_agro()
+    print("Login realizado.")
+    confirm_attention_popup()
+    confirm_establishment_selection()
+    if not wait_window_startswith("AGRO-AG", timeout_seconds=15):
+        raise RuntimeError("Tela AGRO-AG não abriu após reinício.")
+    print("Agro pronto para uso.")
+
+
 def run_once() -> None:
     """Single execution cycle: fetch pending notes and process all of them.
 
     Called by the platform worker. No loop, no sleep — returns when done.
     """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            executando = buscar_U_ROBOT_LOG_EXECUCAO(cursor)
+            if executando:
+                print(f"Robô já em execução (log_id={executando[0]}). Pulando ciclo.")
+                return
+
+            proximo = buscar_U_ROBOT_NEXT(cursor)
+            if not proximo:
+                print("Nenhuma tarefa pendente na fila.")
+                return
+
+            log_id = proximo[0]
+
+        marcar_executando(connection, log_id)
+        print(f"Tarefa log_id={log_id} marcada como EXECUTANDO.")
+
     print("\n Buscando notas...")
 
     with get_connection() as connection:
@@ -41,6 +90,9 @@ def run_once() -> None:
 
     if not notas:
         print("Nenhuma nota pendente.")
+        with get_connection() as connection:
+            marcar_concluido(connection, log_id)
+        print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
         return
 
     print("Iniciando Agro...")
@@ -59,7 +111,16 @@ def run_once() -> None:
 
     print("Agro pronto para uso.")
 
+    ultimo_check = time.time()
+
     for nota in notas:
+        # A cada 3 minutos, consulta U_ROBOT_LOG para ver se o robô foi interrompido
+        if time.time() - ultimo_check >= _INTERRUPT_CHECK_INTERVAL:
+            if _esta_interrompido():
+                print(f"Robô interrompido externamente (log_id={log_id}). Parando processamento.")
+                return
+            ultimo_check = time.time()
+
         try:
             id_nota = nota.get("U_FISCAL_IO_CONT_ID")
             estab_nota = int(nota["ESTAB"])
@@ -68,7 +129,10 @@ def run_once() -> None:
 
             switched = switch_establishment(estab_nota)
             if not switched:
-                raise RuntimeError(f"Erro ao trocar para estab {estab_nota}")
+                print(f"Tela de seleção de estabelecimento não apareceu para nota {id_nota}. Reiniciando Agro e pulando nota.")
+                _reiniciar_agro()
+                continue
+
             print("Troca de estabelecimento realizada.")
 
             processed = process_note_by_config(nota)
@@ -80,6 +144,10 @@ def run_once() -> None:
 
         except Exception as e:
             print(f"Erro na nota {nota.get('U_FISCAL_IO_CONT_ID')}: {e}")
+
+    with get_connection() as connection:
+        marcar_concluido(connection, log_id)
+    print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
 
 
 def run() -> None:
