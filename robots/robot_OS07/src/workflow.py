@@ -19,7 +19,13 @@ from robots.robot_OS07.src.agro_alerts import (
 )
 from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS07.src.agro_login import login_agro
-from robots.robot_OS07.src.database import buscar_notas_pendentes, get_connection
+from robots.robot_OS07.src.database import (
+    buscar_notas_pendentes,
+    buscar_U_ROBOT_LOG_EXECUCAO,
+    buscar_U_ROBOT_NEXT,
+    get_connection,
+    marcar_executando,
+)
 from robots.robot_OS07.src.nota_router import process_note_by_config
 from robots.robot_OS07.src.replacement_estab import (
     switch_establishment,
@@ -32,6 +38,23 @@ def run_once() -> None:
 
     Called by the platform worker. No loop, no sleep — returns when done.
     """
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            executando = buscar_U_ROBOT_LOG_EXECUCAO(cursor)
+            if executando:
+                print(f"Robô já em execução (log_id={executando[0]}). Pulando ciclo.")
+                return
+
+            proximo = buscar_U_ROBOT_NEXT(cursor)
+            if not proximo:
+                print("Nenhuma tarefa pendente na fila.")
+                return
+
+            log_id = proximo[0]
+
+        marcar_executando(connection, log_id)
+        print(f"Tarefa log_id={log_id} marcada como EXECUTANDO.")
+
     print("\n Buscando notas...")
 
     with get_connection() as connection:

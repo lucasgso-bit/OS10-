@@ -1,4 +1,4 @@
-﻿"""
+"""
 Process NOTACONF 225 notes.
 
 Developed by: Matheus Correa
@@ -29,7 +29,6 @@ from robots.robot_OS07.src.notas.nota_utils import (
     restart_agro,
     verificar_advertencia_apos_ordemcarga,
 )
-
 
 # =========================
 # PROCESSO PRINCIPAL

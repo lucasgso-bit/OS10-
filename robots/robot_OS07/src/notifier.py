@@ -17,9 +17,9 @@ from typing import Any
 
 import pyautogui
 
+from config import EMAIL_FROM, EMAIL_PASSWORD, SMTP_HOST
+
 SCREENSHOT_DIR = r"C:\Users\rpa.dev1\Downloads\screen"
-SMTP_HOST = "ORS-SAFETICA.OUROSAFRA.LOCAL"
-EMAIL_FROM = "rpa@ourosafra.com.br"
 EMAIL_TO = [
     "matheus.correa@ourosafra.com.br",
     "nfe.cereais@ourosafra.com.br",
@@ -27,7 +27,6 @@ EMAIL_TO = [
     "isaque.ricardo@ourosafra.com.br",
     "hugo.arantes@ourosafra.com.br",
 ]
-EMAIL_PASSWORD = "QCngrKoR7kLgztPpeDxT"
 
 _HTML_TEMPLATE = """\
 <!DOCTYPE html>

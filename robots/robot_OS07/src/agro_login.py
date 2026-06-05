@@ -14,10 +14,12 @@ import time
 
 import pyautogui
 
+from config import AGRO_SENHA, AGRO_USUARIO
+
 
 def login_agro(
-    usuario: str = "RPA.OS07",
-    senha: str = "12345678",
+    usuario: str = AGRO_USUARIO,
+    senha: str = AGRO_SENHA,
 ) -> None:
     """Fill Agro login credentials."""
     time.sleep(2)

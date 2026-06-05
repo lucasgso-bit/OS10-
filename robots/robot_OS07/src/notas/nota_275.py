@@ -1,4 +1,4 @@
-﻿"""
+"""
 Process NOTACONF 275 notes.
 
 Developed by: Matheus Correa
@@ -438,7 +438,6 @@ def _process_advertencias_275(nota: dict[str, Any]) -> bool:
     time.sleep(1)
     pyautogui.press("enter")
     time.sleep(1)
-
 
     return True
 

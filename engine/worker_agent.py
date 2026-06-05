@@ -23,6 +23,7 @@ import socket
 import time
 
 from core.database import (
+    buscar_executando,
     claim_task,
     complete_task,
     fail_task,
@@ -81,6 +82,17 @@ class WorkerAgent:
             if now - self._last_heartbeat >= _HEARTBEAT_EVERY:
                 heartbeat(conn, self.name)
                 self._last_heartbeat = now
+
+            executando = buscar_executando(conn, self.name)
+            if executando:
+                logger.debug(
+                    "Robot '%s' (id=%d) already EXECUTANDO on computer '%s' — skipping",
+                    executando["nome"],
+                    executando["u_robot_id"],
+                    self.name,
+                )
+                time.sleep(_SLEEP_IDLE)
+                return
 
             task = claim_task(conn, self.name)
 

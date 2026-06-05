@@ -80,16 +80,76 @@ def set_worker_offline(conn: oracledb.Connection, computer_name: str) -> None:
 # Multiple workers can call this simultaneously without conflict.
 # ---------------------------------------------------------------------------
 
+def buscar_executando(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] | None:
+    """Return the robot currently EXECUTANDO on this machine, or None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                u_log.U_ROBOT_LOG_ID,
+                u_log.U_ROBOT_ID,
+                u_log.STATUS,
+                u.NOME,
+                u.DESCRICAO,
+                u.PRIORIDADE,
+                u_log.DTINICIALIZACAO
+            FROM U_ROBOT_LOG u_log
+            INNER JOIN U_ROBOT u
+                ON u.U_ROBOT_ID = u_log.U_ROBOT_ID
+            WHERE u_log.STATUS = 'EXECUTANDO'
+              AND u_log.COMPUTADOR = :comp
+            """,
+            {"comp": computer_name},
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [c[0].lower() for c in cur.description]
+        return dict(zip(cols, row, strict=False))
+
+
+def buscar_proximo_pendente(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] | None:
+    """Return the next PENDENTE robot in queue for this machine (read-only)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                u_log.U_ROBOT_LOG_ID,
+                u_log.U_ROBOT_ID,
+                u_log.STATUS,
+                u.NOME,
+                u.DESCRICAO,
+                u.PRIORIDADE,
+                u_log.DTINICIALIZACAO
+            FROM U_ROBOT_LOG u_log
+            INNER JOIN U_ROBOT u
+                ON u.U_ROBOT_ID = u_log.U_ROBOT_ID
+            WHERE u_log.STATUS = 'PENDENTE'
+              AND u_log.COMPUTADOR = :comp
+            ORDER BY u_log.DTINICIALIZACAO
+            FETCH FIRST 1 ROW ONLY
+            """,
+            {"comp": computer_name},
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [c[0].lower() for c in cur.description]
+        return dict(zip(cols, row, strict=False))
+
+
 def claim_task(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT U_ROBOT_LOG_ID, U_ROBOT_ID
               FROM U_ROBOT_LOG
-             WHERE STATUS = 'PENDENTE'
-               AND ROWNUM = 1
+             WHERE STATUS    = 'PENDENTE'
+               AND COMPUTADOR = :comp
+               AND ROWNUM    = 1
                FOR UPDATE SKIP LOCKED
-            """
+            """,
+            {"comp": computer_name},
         )
         row = cur.fetchone()
 
@@ -102,11 +162,10 @@ def claim_task(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] 
             """
             UPDATE U_ROBOT_LOG
                SET STATUS          = 'EXECUTANDO',
-                   COMPUTADOR      = :comp,
                    DTINICIALIZACAO = SYSTIMESTAMP
              WHERE U_ROBOT_LOG_ID  = :id
             """,
-            {"comp": computer_name, "id": log_id},
+            {"id": log_id},
         )
         conn.commit()
 
