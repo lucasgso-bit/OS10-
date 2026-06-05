@@ -1,4 +1,4 @@
-"""
+﻿"""
 Process NOTACONF 270 notes.
 
 Developed by: Matheus Correa
@@ -16,9 +16,9 @@ from typing import Any
 import pyautogui
 import pygetwindow as gw
 
-from src.notifier import notify_error
-from src.replacement_estab import wait_window_startswith
-from src.notas.nota_utils import (
+from robots.robot_OS07.src.notifier import notify_error
+from robots.robot_OS07.src.replacement_estab import wait_window_startswith
+from robots.robot_OS07.src.notas.nota_utils import (
     advertencias_tem_erro_critico,
     click_in_window,
     double_click_in_window,

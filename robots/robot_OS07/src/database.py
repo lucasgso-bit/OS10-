@@ -82,7 +82,8 @@ WHERE OS_RPA_NOTA_07.STATUS = 100
         (
            -- estab <> 67 and
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 21
-            and notaconf in ('255','270','232','314', '275', '285', '284')
+           -- and notaconf in ('255','270','232','314', '275', '285', '284')
+            AND  and notaconf in ('225,232)
             and ieemitente is not null
            -- and chaveacesso ='35260608032953000143550010000004221860859264'
         )

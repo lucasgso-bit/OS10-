@@ -8,10 +8,10 @@ Last Modified: 2026-05-15
 Version: 1.0.0
 """
 
-from src.database import init_oracle_client
+from robots.robot_OS07.src.database import init_oracle_client
 
 
-from src.workflow import run
+from robots.robot_OS07.src.workflow import run
 
 
 def main() -> None:

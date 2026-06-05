@@ -10,15 +10,15 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.notas.nota_225 import process_notaconf_225
-from src.notas.nota_232 import process_notaconf_232
-from src.notas.nota_244 import process_notaconf_244
-from src.notas.nota_255 import process_notaconf_255
-from src.notas.nota_270 import process_notaconf_270
-from src.notas.nota_275 import process_notaconf_275
-from src.notas.nota_284 import process_notaconf_284
-from src.notas.nota_285 import process_notaconf_285
-from src.notas.nota_314 import process_notaconf_314
+from robots.robot_OS07.src.notas.nota_225 import process_notaconf_225
+from robots.robot_OS07.src.notas.nota_232 import process_notaconf_232
+from robots.robot_OS07.src.notas.nota_244 import process_notaconf_244
+from robots.robot_OS07.src.notas.nota_255 import process_notaconf_255
+from robots.robot_OS07.src.notas.nota_270 import process_notaconf_270
+from robots.robot_OS07.src.notas.nota_275 import process_notaconf_275
+from robots.robot_OS07.src.notas.nota_284 import process_notaconf_284
+from robots.robot_OS07.src.notas.nota_285 import process_notaconf_285
+from robots.robot_OS07.src.notas.nota_314 import process_notaconf_314
 
 PROCESSORS = {
     "225": process_notaconf_225,

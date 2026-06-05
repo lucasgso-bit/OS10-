@@ -13,16 +13,18 @@ EMAIL_TO = "matheus.correa@ourosafra.com.br"
 EMAIL_PASSWORD = "Aes25869@@"
 
 
-
 def _send_msg(server: smtplib.SMTP) -> None:
     msg = MIMEMultipart()
     msg["Subject"] = "VX360 - Teste de envio de email"
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
-    msg.attach(MIMEText(
-        "<h2>Teste OK</h2><p>Email de teste do notifier VX360.</p>",
-        "html", "utf-8",
-    ))
+    msg.attach(
+        MIMEText(
+            "<h2>Teste OK</h2><p>Email de teste do notifier VX360.</p>",
+            "html",
+            "utf-8",
+        )
+    )
     server.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
     print("    OK — email enviado!")
 
@@ -52,7 +54,7 @@ def test_smtp_connection() -> None:
 
 def test_notify_error() -> None:
     print("\n[6] Testando notify_error completo (screenshot + email + delete) ...")
-    from src.notifier import notify_error
+    from robots.robot_OS07.src.notifier import notify_error
 
     nota_fake = {
         "U_FISCAL_IO_CONT_ID": 9999,

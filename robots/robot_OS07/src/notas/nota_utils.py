@@ -16,11 +16,14 @@ import pyautogui
 import pygetwindow as gw
 
 from config import AGRO_EXE
-from src.agro_alerts import confirm_attention_popup, confirm_establishment_selection
-from src.agro_app import kill_agro_process, start_agro
-from src.agro_login import login_agro
-from src.notifier import notify_error
-from src.replacement_estab import wait_window_startswith
+from robots.robot_OS07.src.agro_alerts import (
+    confirm_attention_popup,
+    confirm_establishment_selection,
+)
+from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
+from robots.robot_OS07.src.agro_login import login_agro
+from robots.robot_OS07.src.notifier import notify_error
+from robots.robot_OS07.src.replacement_estab import wait_window_startswith
 
 ESTABS_COM_CHAVE_NFE = {"26", "68", "71"}
 
@@ -139,7 +142,7 @@ def get_estab(nota: dict[str, Any]) -> str:
             return str(value).strip()
 
     return ""
-                                                    
+
 
 def format_dtemissao_ddmmyy(nota: dict[str, Any]) -> str:
     """Format DTEMISSAO from ddmmyyyy to ddmmyy."""

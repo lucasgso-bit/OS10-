@@ -13,12 +13,18 @@ from __future__ import annotations
 import time
 
 from config import AGRO_EXE
-from src.agro_alerts import confirm_attention_popup, confirm_establishment_selection
-from src.agro_app import kill_agro_process, start_agro
-from src.agro_login import login_agro
-from src.database import buscar_notas_pendentes, get_connection
-from src.nota_router import process_note_by_config
-from src.replacement_estab import switch_establishment, wait_window_startswith
+from robots.robot_OS07.src.agro_alerts import (
+    confirm_attention_popup,
+    confirm_establishment_selection,
+)
+from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
+from robots.robot_OS07.src.agro_login import login_agro
+from robots.robot_OS07.src.database import buscar_notas_pendentes, get_connection
+from robots.robot_OS07.src.nota_router import process_note_by_config
+from robots.robot_OS07.src.replacement_estab import (
+    switch_establishment,
+    wait_window_startswith,
+)
 
 
 def run_once() -> None:

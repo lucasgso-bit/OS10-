@@ -1,5 +1,5 @@
-"""
-Process NOTACONF 285 notes.
+﻿"""
+Process NOTACONF 244 notes.
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
@@ -15,9 +15,9 @@ from typing import Any
 import pyautogui
 import pygetwindow as gw
 
-from src.notifier import notify_error
-from src.replacement_estab import wait_window_startswith
-from src.notas.nota_utils import (
+from robots.robot_OS07.src.notifier import notify_error
+from robots.robot_OS07.src.replacement_estab import wait_window_startswith
+from robots.robot_OS07.src.notas.nota_utils import (
     ESTABS_COM_CHAVE_NFE,
     advertencias_tem_erro_critico,
     click_in_window,
@@ -35,14 +35,15 @@ from src.notas.nota_utils import (
     verificar_advertencia_apos_ordemcarga,
 )
 
+
 # =========================
 # PROCESSO PRINCIPAL
 # =========================
 
 
-def process_notaconf_285(nota: dict[str, Any]) -> bool:
-    """Fluxo principal NOTACONF 285."""
-    print("Processando NOTACONF 285...")
+def process_notaconf_244(nota: dict[str, Any]) -> bool:
+    """Fluxo principal NOTACONF 244."""
+    print("Processando NOTACONF 244...")
 
     if not focus_window("AGRO-AG"):
         print("Janela principal do Agro não encontrada.")
@@ -77,7 +78,7 @@ def process_notaconf_285(nota: dict[str, Any]) -> bool:
     pyautogui.hotkey("ctrl", "insert")
     time.sleep(8)
 
-    pyautogui.write("285", interval=0.03)
+    pyautogui.write("244", interval=0.03)
     pyautogui.press("enter")
     time.sleep(3)
 
@@ -198,7 +199,6 @@ def process_nota_filha(nota: dict[str, Any], ddmmyy: str) -> bool:
         time.sleep(0.5)
         click_in_window("Agro", 130, 61)
         time.sleep(1)
-        print("passei no erro!")
         return handle_error(
             nota, "Nenhuma linha encontrada na grid sgNota — NOTAFILHA não encontrada"
         )
@@ -384,13 +384,13 @@ def process_nota_filha(nota: dict[str, Any], ddmmyy: str) -> bool:
     # =========================
     #  IMPRESSÃO / TRANSMISSÃO
     # =========================
-    if not _process_impressao_transmissao_285(nota):
+    if not _process_impressao_transmissao_244(nota):
         return False
 
     # =========================
     #  PÓS-TRANSMISSÃO POR ESTAB
     # =========================
-    if not _process_chave_por_estab_285(nota, ddmmyy):
+    if not _process_chave_por_estab_244(nota, ddmmyy):
         return False
 
     return True
@@ -401,7 +401,7 @@ def process_nota_filha(nota: dict[str, Any], ddmmyy: str) -> bool:
 # =========================
 
 
-def _process_impressao_transmissao_285(nota: dict[str, Any]) -> bool:
+def _process_impressao_transmissao_244(nota: dict[str, Any]) -> bool:
     """Valida tela de impressão, trata mensagem da nota, transmite NF-e e fecha telas."""
     print("Verificando tela 'Impressao de Nota Fiscal Eletronica'...")
 
@@ -459,7 +459,7 @@ def _process_impressao_transmissao_285(nota: dict[str, Any]) -> bool:
 # =========================
 
 
-def _process_chave_por_estab_285(nota: dict[str, Any], ddmmyy: str) -> bool:
+def _process_chave_por_estab_244(nota: dict[str, Any], ddmmyy: str) -> bool:
     """Fluxo pós-transmissão de chave para estabelecimentos 26, 68 e 71."""
     estab = get_estab(nota)
 
@@ -513,15 +513,16 @@ def _process_chave_por_estab_285(nota: dict[str, Any], ddmmyy: str) -> bool:
     else:
         print("Tela de endereco nao apareceu. Seguindo direto para alteracao de data.")
 
-    _alterar_data_nota_285(ddmmyy)
+    if not _alterar_data_nota_244(ddmmyy):
+        return False
 
-    if not _salvar_final_285():
+    if not _salvar_final_244():
         return False
 
     return True
 
 
-def _alterar_data_nota_285(ddmmyy: str) -> bool:
+def _alterar_data_nota_244(ddmmyy: str) -> bool:
     """Altera a data da NF pela mesma sequência de teclado usada no PowerShell."""
     print(f"Alterando data para '{ddmmyy}'...")
 
@@ -542,17 +543,16 @@ def _alterar_data_nota_285(ddmmyy: str) -> bool:
     return True
 
 
-def _salvar_final_285() -> bool:
+def _salvar_final_244() -> bool:
     """Executa o salvamento final após ajustes de data/chave."""
     print("Executando salvamento final...")
-    print("ctrl salvamento final...")
+
     time.sleep(5)
     pyautogui.hotkey("ctrl", "s")
-    time.sleep(3)
-    print("ctrl o")
+    time.sleep(10)
     pyautogui.hotkey("alt", "o")
     time.sleep(1)
-    print("enter")
+
     time.sleep(5)
     pyautogui.press("enter")
     time.sleep(1)
@@ -560,7 +560,6 @@ def _salvar_final_285() -> bool:
     time.sleep(8)
     pyautogui.hotkey("ctrl", "s")
     time.sleep(1)
-    close_current_windows(times=3, delay_seconds=2)
-    time.sleep(5)
+
     print("Salvamento final executado.")
     return True

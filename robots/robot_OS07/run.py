@@ -7,11 +7,11 @@ and this delegates to the single-cycle workflow function.
 from __future__ import annotations
 
 from robots.base import BaseRobot
-from src.workflow import run_once
+from robots.robot_OS07.src.workflow import run_once
 
 
 class Robot(BaseRobot):
-    robot_id = 7
+    robot_id = 11
 
     def run(self) -> None:
         run_once()

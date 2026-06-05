@@ -1,24 +1,26 @@
-"""
-Process NOTACONF 225 notes.
+﻿"""
+Process NOTACONF 314 notes.
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
 Last Modified: 2026-06-02
-Version: 1.1.0
+Version: 1.6.0
 """
 
 from __future__ import annotations
 
 import time
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import pyautogui
 import pygetwindow as gw
+import pyperclip
 
-from src.notifier import notify_error
-from src.replacement_estab import wait_window_startswith
-from src.notas.nota_utils import (
+from robots.robot_OS07.src.notifier import notify_error
+from robots.robot_OS07.src.replacement_estab import wait_window_startswith
+from robots.robot_OS07.src.notas.nota_utils import (
     advertencias_tem_erro_critico,
     click_in_window,
     double_click_in_window,
@@ -30,15 +32,37 @@ from src.notas.nota_utils import (
     verificar_advertencia_apos_ordemcarga,
 )
 
+# =========================
+# UTILS LOCAIS
+# =========================
+
+
+def _focus_consulta_contratos_window(timeout: int = 7) -> bool:
+    """Foca na tela 'Consulta contratos'."""
+    for _ in range(timeout):
+        for window in gw.getAllWindows():
+            title = window.title.strip().lower()
+
+            if "consulta contratos" in title:
+                window.activate()
+                time.sleep(1)
+                return True
+
+        time.sleep(1)
+
+    print("DEBUG - Janelas disponíveis:")
+    print_open_windows()
+    return False
+
 
 # =========================
 # PROCESSO PRINCIPAL
 # =========================
 
 
-def process_notaconf_225(nota: dict[str, Any]) -> bool:
-    """Fluxo principal NOTACONF 225."""
-    print("Processando NOTACONF 225...")
+def process_notaconf_314(nota: dict[str, Any]) -> bool:
+    """Fluxo principal NOTACONF 314."""
+    print("Processando NOTACONF 314...")
 
     if not focus_window("AGRO-AG"):
         print("Janela principal do Agro não encontrada.")
@@ -73,7 +97,7 @@ def process_notaconf_225(nota: dict[str, Any]) -> bool:
     pyautogui.hotkey("ctrl", "insert")
     time.sleep(8)
 
-    pyautogui.write("225", interval=0.03)
+    pyautogui.write("314", interval=0.03)
     pyautogui.press("enter")
     time.sleep(3)
 
@@ -145,9 +169,18 @@ def process_dados_nfe_recebida(nota: dict[str, Any]) -> bool:
 
             print(f"Inscrição '{inscricao}' selecionada.")
         else:
-            print("IEEMITENTE não encontrada, pulando.")
+            pyautogui.press("enter")
+            pyautogui.press("enter")
+            pyautogui.press("enter")
+            pyautogui.press("enter")
+            pyautogui.press("enter")
+            pyautogui.press("enter")
     else:
-        print("Tela de endereço não apareceu, seguindo fluxo...")
+        print("Tela de endereço não apareceu. Continuando sem selecionar endereço.")
+        time.sleep(0.5)
+        for _ in range(6):
+            pyautogui.press("enter")
+            time.sleep(0.3)
 
     # =========================
     # DATA EMISSÃO
@@ -182,10 +215,10 @@ def process_dados_nfe_recebida(nota: dict[str, Any]) -> bool:
     print(f"Data '{ddmmyy}' preenchida.")
 
     # =========================
-    # NOTA FILHA
+    # CONTRATO
     # =========================
-    if not process_nota_filha(nota):
-        print("Falha na etapa de nota filha.")
+    if not process_consulta_contrato(nota):
+        print("Falha na etapa de contrato.")
         return False
 
     print("Processo finalizado com sucesso.")
@@ -193,108 +226,178 @@ def process_dados_nfe_recebida(nota: dict[str, Any]) -> bool:
 
 
 # =========================
-# PROCESSO NOTA FILHA
+# PROCESSO CONTRATO
 # =========================
 
 
-def process_nota_filha(nota: dict[str, Any]) -> bool:
-    """Processa nota filha + quantidade + classificação + placa + ordem + financeiro."""
+def process_consulta_contrato(nota: dict[str, Any]) -> bool:
+    """Processa contrato + quantidade + classificação + placa + ordem + financeiro."""
 
-    notafilha = str(nota.get("NOTAFILHA") or "").strip()
+    contrato = str(nota.get("CONTRATO") or "").strip()
     quantidade = str(nota.get("QUANTIDADE") or "").strip()
     classif_local = str(nota.get("CLASSIF_LOCAL") or "").strip()
     ordem_carga = str(nota.get("ORDEMCARGA") or "").strip()
 
-    if not notafilha:
-        print("NOTAFILHA não encontrada.")
-        return handle_error(nota, "NOTAFILHA não encontrada na nota")
+    if not contrato:
+        print("CONTRATO não encontrado.")
+        return handle_error(nota, "CONTRATO não encontrado na nota")
 
-    if not focus_window("Nota Fiscal"):
-        print("Tela 'Nota Fiscal' não encontrada.")
-        return handle_error(nota, "Tela 'Nota Fiscal' não encontrada")
+    if not _focus_consulta_contratos_window():
+        print("Tela 'Consulta contratos' não encontrada.")
+        return handle_error(nota, "Tela 'Consulta contratos' não encontrada")
 
-    print(f"Tela encontrada. NOTAFILHA: {notafilha}")
+    print(f"Tela encontrada. Contrato: {contrato}")
 
     time.sleep(1)
 
     # =========================
-    # ABRE TELA "A PARTIR DE NF"
+    # FOCO
     # =========================
-    double_click_in_window("Nota Fiscal", 697, 120)
-    time.sleep(2)
+    pyautogui.click(200, 200)
+    time.sleep(0.5)
 
     # =========================
-    # NOTA FILHA: Tab×13 → escreve → Enter → Ctrl+P
+    # CONTRATO
     # =========================
-    for _ in range(13):
+    time.sleep(2)
+    for _ in range(6):
         pyautogui.press("tab")
         time.sleep(0.1)
 
-    pyautogui.write(notafilha, interval=0.03)
+    pyautogui.write(contrato, interval=0.03)
     pyautogui.press("enter")
     time.sleep(1)
 
-    agro_count_before = sum(1 for w in gw.getAllWindows() if w.title.strip() == "Agro")
-
     pyautogui.hotkey("ctrl", "p")
-
-    popup_detectado = False
-    for _ in range(3):
-        time.sleep(1)
-        if (
-            sum(1 for w in gw.getAllWindows() if w.title.strip() == "Agro")
-            > agro_count_before
-        ):
-            popup_detectado = True
-            break
-
-    if popup_detectado:
-        print("Popup 'Agro' detectado — Nenhuma linha encontrada na grid sgNota.")
-        focus_window("Agro")
-        time.sleep(0.5)
-        click_in_window("Agro", 130, 61)
-        time.sleep(1)
-        return handle_error(
-            nota, "Nenhuma linha encontrada na grid sgNota — NOTAFILHA não encontrada"
-        )
-
-    print(f"NOTAFILHA '{notafilha}' preenchida.")
+    time.sleep(2)
 
     # =========================
-    # QUANTIDADE: Tab×20 → Enter×2 → quantidade → Enter → Ctrl+S
+    # VERIFICA SE CONTRATO FOI ENCONTRADO
+    # =========================
+    if wait_window_startswith("Atenção", timeout_seconds=3):
+        print("Popup 'Atenção' após busca de contrato — contrato não encontrado.")
+        pyautogui.press("enter")
+        time.sleep(0.5)
+        return handle_error(nota, f"Contrato '{contrato}' não encontrado no Agro")
+
+    if wait_window_startswith("Erro!", timeout_seconds=3):
+        print("Popup 'Erro!' após busca de contrato.")
+        focus_window("Erro!")
+        time.sleep(0.5)
+        pyautogui.press("enter")
+        time.sleep(0.5)
+        return handle_error(nota, f"Erro ao buscar contrato '{contrato}' no Agro")
+
+    # =========================
+    # QUANTIDADE
     # =========================
     if quantidade:
         time.sleep(2)
 
-        for _ in range(19):
+        for _ in range(3):
             pyautogui.press("tab")
             time.sleep(0.1)
 
         pyautogui.press("enter")
         pyautogui.press("enter")
+        time.sleep(1)
 
         pyautogui.write(quantidade, interval=0.03)
         pyautogui.press("enter")
+        time.sleep(1)
+
+        # =========================
+        # VOLTA NO CAMPO
+        # =========================
+        pyautogui.press("enter")
+        time.sleep(1)
+
+        # Garante foco na janela correta antes de copiar o campo
+        _focus_consulta_contratos_window()
+        time.sleep(0.3)
+
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.2)
+        pyautogui.hotkey("ctrl", "c")
+        time.sleep(0.5)
+
+        valor_campo = pyperclip.paste().strip()
+        print(f"Valor retornado pelo Agro: '{valor_campo[:80]}'")
+
+        # =========================
+        # NORMALIZA CORRETAMENTE
+        # =========================
+        def _to_decimal(valor: str) -> Decimal:
+            valor = valor.strip()
+
+            if "," in valor:
+                valor = valor.replace(".", "").replace(",", ".")
+            return Decimal(valor)
+
+        try:
+            valor_campo_dec = _to_decimal(valor_campo)
+            quantidade_dec = _to_decimal(quantidade)
+
+            print(f"Comparação: campo={valor_campo_dec} | digitado={quantidade_dec}")
+
+            # =========================
+            # VALIDAÇÃO REAL
+            # =========================
+            if valor_campo_dec < quantidade_dec:
+                print("ERRO: Agro reduziu a quantidade (contrato insuficiente).")
+
+                return handle_error(
+                    nota,
+                    f"Quantidade ajustada menor que informada. Retorno: {valor_campo} | Digitado: {quantidade}",
+                )
+
+        except (InvalidOperation, Exception):
+            print(
+                f"AVISO: Não foi possível validar quantidade via clipboard. "
+                f"Campo='{valor_campo[:80]}' | Digitado='{quantidade}' — continuando."
+            )
+
+        pyautogui.press("enter")
+        time.sleep(0.5)
 
         pyautogui.hotkey("ctrl", "s")
         time.sleep(1)
 
-        print(f"Quantidade '{quantidade}' inserida e salva.")
+        print(f"Quantidade '{quantidade}' validada e salva.")
+
     else:
         print("QUANTIDADE não informada.")
 
     # =========================
-    #  TRATA POPUP ATENÇÃO (erro de quantidade)
+    #  TRATA POPUP ATENÇÃO
     # =========================
     print("Verificando popup 'Atenção'...")
 
     if wait_window_startswith("Atenção", timeout_seconds=3):
-        print("Popup 'Atenção' detectado — Quantidade a fixar maior que o saldo.")
+        print("Popup 'Atenção' detectado.")
+        pyautogui.hotkey("ctrl", "s")
+
+    else:
+        print("Popup 'Atenção' não apareceu.")
+
+    # =========================
+    #  TRATA ERRO IMPOSTO 1
+    # =========================
+    print("Verificando popup 'Erro'...")
+
+    if wait_window_startswith("Erro!", timeout_seconds=3):
+        print("Popup 'Erro!' detectado — erro no imposto.")
+
+        focus_window("Erro!")
+        time.sleep(0.5)
+
         pyautogui.press("enter")
         time.sleep(1)
-        return handle_error(nota, "Quantidade a fixar maior que o saldo")
 
-    print("Popup 'Atenção' não apareceu.")
+        return handle_error(nota, "Erro no imposto ao processar a nota")
+
+    else:
+        print("Popup 'Erro!' não apareceu.")
 
     # =========================
     # CLASSIFICAÇÃO
@@ -302,6 +405,7 @@ def process_nota_filha(nota: dict[str, Any]) -> bool:
     pyautogui.hotkey("alt", "o")
     time.sleep(1)
 
+    pyautogui.hotkey("shift", "tab")
     pyautogui.press("right")
     pyautogui.press("down")
 
@@ -389,5 +493,5 @@ def process_nota_filha(nota: dict[str, Any]) -> bool:
     pyautogui.hotkey("ctrl", "f4")
     time.sleep(1)
 
-    print("Nota filha processada com sucesso.")
+    print("Contrato processado com sucesso.")
     return True
