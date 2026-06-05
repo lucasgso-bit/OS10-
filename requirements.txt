@@ -1,0 +1,16 @@
+# Banco de dados Oracle
+oracledb==3.4.1
+
+# Automação de interface gráfica
+PyAutoGUI==0.9.54
+PyGetWindow==0.0.9
+pyperclip==1.9.0
+Pillow==11.2.1
+pywin32==311
+pywinauto==0.6.9
+
+# Monitoramento de processos
+psutil==7.1.0
+
+# Variáveis de ambiente
+python-dotenv==1.1.1
