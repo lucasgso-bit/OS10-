@@ -200,3 +200,18 @@ def marcar_executando(connection: oracledb.Connection, log_id: int) -> None:
             {"id": log_id, "comp": COMPUTADOR_ROBO},
         )
         connection.commit()
+
+
+def marcar_concluido(connection: oracledb.Connection, log_id: int) -> None:
+    """Muda o status da tarefa para CONCLUIDO com timestamp de finalização."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE u_robot_log
+               SET status        = 'CONCLUIDO',
+                   dtfinalizacao = SYSTIMESTAMP
+             WHERE u_robot_log_id = :id
+            """,
+            {"id": log_id},
+        )
+        connection.commit()

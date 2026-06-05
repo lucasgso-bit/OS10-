@@ -272,3 +272,14 @@ def create_pending_task(conn: oracledb.Connection, robot_id: int) -> int:
         )
         conn.commit()
         return int(out_var.getvalue()[0])
+
+
+def check_task_status(conn: oracledb.Connection, log_id: int) -> str | None:
+    """Return the current STATUS of a U_ROBOT_LOG row, or None if not found."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT STATUS FROM U_ROBOT_LOG WHERE U_ROBOT_LOG_ID = :id",
+            {"id": log_id},
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
