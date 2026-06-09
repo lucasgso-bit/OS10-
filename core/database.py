@@ -32,6 +32,7 @@ def get_connection() -> Generator[oracledb.Connection, None, None]:
 # Worker registry
 # ---------------------------------------------------------------------------
 
+
 def register_worker(conn: oracledb.Connection, computer_name: str) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -80,7 +81,10 @@ def set_worker_offline(conn: oracledb.Connection, computer_name: str) -> None:
 # Multiple workers can call this simultaneously without conflict.
 # ---------------------------------------------------------------------------
 
-def buscar_executando(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] | None:
+
+def buscar_executando(
+    conn: oracledb.Connection, computer_name: str
+) -> dict[str, Any] | None:
     """Return the robot currently EXECUTANDO on this machine, or None."""
     with conn.cursor() as cur:
         cur.execute(
@@ -108,7 +112,9 @@ def buscar_executando(conn: oracledb.Connection, computer_name: str) -> dict[str
         return dict(zip(cols, row, strict=False))
 
 
-def buscar_proximo_pendente(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] | None:
+def buscar_proximo_pendente(
+    conn: oracledb.Connection, computer_name: str
+) -> dict[str, Any] | None:
     """Return the next PENDENTE robot in queue for this machine (read-only)."""
     with conn.cursor() as cur:
         cur.execute(
@@ -125,11 +131,11 @@ def buscar_proximo_pendente(conn: oracledb.Connection, computer_name: str) -> di
             INNER JOIN U_ROBOT u
                 ON u.U_ROBOT_ID = u_log.U_ROBOT_ID
             WHERE u_log.STATUS = 'PENDENTE'
-              AND u_log.COMPUTADOR = :comp
+            --  AND (u_log.COMPUTADOR IS NULL OR u_log.COMPUTADOR = :comp)
             ORDER BY u_log.DTINICIALIZACAO
             FETCH FIRST 1 ROW ONLY
             """,
-            {"comp": computer_name},
+            #  {"comp": computer_name},
         )
         row = cur.fetchone()
         if not row:
@@ -145,7 +151,7 @@ def claim_task(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] 
             SELECT U_ROBOT_LOG_ID, U_ROBOT_ID
               FROM U_ROBOT_LOG
              WHERE STATUS    = 'PENDENTE'
-               AND COMPUTADOR = :comp
+               AND (COMPUTADOR IS NULL OR COMPUTADOR = :comp)
                AND ROWNUM    = 1
                FOR UPDATE SKIP LOCKED
             """,
@@ -162,22 +168,75 @@ def claim_task(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] 
             """
             UPDATE U_ROBOT_LOG
                SET STATUS          = 'EXECUTANDO',
+                   COMPUTADOR      = :comp,
                    DTINICIALIZACAO = SYSTIMESTAMP
              WHERE U_ROBOT_LOG_ID  = :id
             """,
-            {"id": log_id},
+            {"id": log_id, "comp": computer_name},
         )
         conn.commit()
 
     return {"log_id": int(log_id), "robot_id": int(robot_id)}
 
 
-def complete_task(conn: oracledb.Connection, log_id: int, mensagem: str = "Executado com sucesso") -> None:
+def claim_any_task(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] | None:
+    """Claim the next PENDENTE task regardless of COMPUTADOR assignment."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT U_ROBOT_LOG_ID, U_ROBOT_ID
+              FROM U_ROBOT_LOG
+             WHERE STATUS = 'PENDENTE'
+               AND ROWNUM = 1
+               FOR UPDATE SKIP LOCKED
+            """
+        )
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        log_id, robot_id = row
+
+        cur.execute(
+            """
+            UPDATE U_ROBOT_LOG
+               SET STATUS          = 'EXECUTANDO',
+                   COMPUTADOR      = :comp,
+                   DTINICIALIZACAO = SYSTIMESTAMP
+             WHERE U_ROBOT_LOG_ID  = :id
+            """,
+            {"id": log_id, "comp": computer_name},
+        )
+        conn.commit()
+
+    return {"log_id": int(log_id), "robot_id": int(robot_id)}
+
+
+def marcar_executando(conn: oracledb.Connection, log_id: int, computador: str) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE u_robot_log
+               SET status          = 'EXECUTANDO',
+                   COMPUTADOR      = :comp,
+                   dtinicializacao = SYSTIMESTAMP
+             WHERE u_robot_log_id  = :id
+               AND status          = 'PENDENTE'
+            """,
+            {"id": log_id, "comp": computador},
+        )
+        conn.commit()
+
+
+def complete_task(
+    conn: oracledb.Connection, log_id: int, mensagem: str = "Executado com sucesso"
+) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE U_ROBOT_LOG
-               SET STATUS        = 'SUCESSO',
+               SET STATUS        = 'CONCLUIDO',
                    DTFINALIZACAO = SYSTIMESTAMP,
                    MENSAGEM      = :msg
              WHERE U_ROBOT_LOG_ID = :id
@@ -206,16 +265,15 @@ def fail_task(conn: oracledb.Connection, log_id: int, mensagem: str) -> None:
 # Scheduler helpers — used by the orchestrator
 # ---------------------------------------------------------------------------
 
+
 def get_scheduled_robots(conn: oracledb.Connection) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
-        cur.execute(
-            """
+        cur.execute("""
             SELECT U_ROBOT_ID, NOME, INTERVALOMINUTOS, EXECMAXDIA,
                    EXECTODOSDIAS, DIAS, EXECNOVAMENTE
               FROM U_ROBOT
              WHERE ATIVO = 'S'
-            """
-        )
+            """)
         columns = [col[0] for col in cur.description]
         return [dict(zip(columns, row, strict=False)) for row in cur.fetchall()]
 
@@ -240,7 +298,7 @@ def count_executions_today(conn: oracledb.Connection, robot_id: int) -> int:
             SELECT COUNT(*) FROM U_ROBOT_LOG
              WHERE U_ROBOT_ID = :id
                AND TRUNC(DTINCLUSAO) = TRUNC(SYSDATE)
-               AND STATUS IN ('SUCESSO', 'EXECUTANDO', 'PENDENTE')
+               AND STATUS IN ('CONCLUIDO', 'EXECUTANDO', 'PENDENTE')
             """,
             {"id": robot_id},
         )
@@ -252,7 +310,7 @@ def get_last_success(conn: oracledb.Connection, robot_id: int):
         cur.execute(
             """
             SELECT MAX(DTFINALIZACAO) FROM U_ROBOT_LOG
-             WHERE U_ROBOT_ID = :id AND STATUS = 'SUCESSO'
+             WHERE U_ROBOT_ID = :id AND STATUS = 'CONCLUIDO'
             """,
             {"id": robot_id},
         )

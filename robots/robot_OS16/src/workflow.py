@@ -1,11 +1,11 @@
-"""Run the initial WNota 255 workflow steps.
+"""Run the OS16 workflow steps.
 
 Update robot execution status, search pending notes, and open Agro when needed.
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
-Last Modified: 2026-06-05
-Version: 2.0.0
+Last Modified: 2026-06-08
+Version: 1.0.0
 """
 
 from __future__ import annotations
@@ -20,19 +20,18 @@ from core.database import (
     get_connection,
     marcar_executando,
 )
-from robots.robot_OS07.src.agro_alerts import (
+from robots.robot_OS16.src.agro_alerts import (
     confirm_attention_popup,
     confirm_establishment_selection,
 )
-from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
-from robots.robot_OS07.src.agro_login import login_agro
-from robots.robot_OS07.src.database import buscar_notas_pendentes
-from robots.robot_OS07.src.nota_router import process_note_by_config
-from robots.robot_OS07.src.replacement_estab import (
+from robots.robot_OS16.src.agro_app import kill_agro_process, start_agro
+from robots.robot_OS16.src.agro_login import login_agro
+from robots.robot_OS16.src.database import buscar_notas_pendentes
+from robots.robot_OS16.src.nota_router import process_note_by_config
+from robots.robot_OS16.src.replacement_estab import (
     switch_establishment,
     wait_window_startswith,
 )
-
 
 _INTERRUPT_CHECK_INTERVAL = 180  # 3 minutos
 
@@ -72,7 +71,9 @@ def run_once(log_id: int | None = None) -> None:
         with get_connection() as connection:
             executando = buscar_executando(connection, COMPUTADOR_ROBO)
             if executando:
-                print(f"Robô já em execução (log_id={executando['u_robot_log_id']}). Pulando ciclo.")
+                print(
+                    f"Robô já em execução (log_id={executando['u_robot_log_id']}). Pulando ciclo."
+                )
                 return
 
             proximo = buscar_proximo_pendente(connection, COMPUTADOR_ROBO)
@@ -114,14 +115,16 @@ def run_once(log_id: int | None = None) -> None:
         raise RuntimeError("Tela AGRO-AG não abriu.")
 
     print("Agro pronto para uso.")
-
+    print("ADASADSDASDASASDDASDSA")
     ultimo_check = time.time()
 
     for nota in notas:
         # A cada 3 minutos, consulta U_ROBOT_LOG para ver se o robô foi interrompido
         if time.time() - ultimo_check >= _INTERRUPT_CHECK_INTERVAL:
             if _esta_interrompido():
-                print(f"Robô interrompido externamente (log_id={log_id}). Parando processamento.")
+                print(
+                    f"Robô interrompido externamente (log_id={log_id}). Parando processamento."
+                )
                 return
             ultimo_check = time.time()
 
@@ -133,7 +136,9 @@ def run_once(log_id: int | None = None) -> None:
 
             switched = switch_establishment(estab_nota)
             if not switched:
-                print(f"Tela de seleção de estabelecimento não apareceu para nota {id_nota}. Reiniciando Agro e pulando nota.")
+                print(
+                    f"Tela de seleção de estabelecimento não apareceu para nota {id_nota}. Reiniciando Agro e pulando nota."
+                )
                 _reiniciar_agro()
                 continue
 

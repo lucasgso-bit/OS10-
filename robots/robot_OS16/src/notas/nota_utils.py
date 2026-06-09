@@ -2,7 +2,7 @@
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
-Last Modified: 2026-06-02
+Last Modified: 2026-06-08
 Version: 1.0.0
 """
 
@@ -18,14 +18,14 @@ import pygetwindow as gw
 pyautogui.FAILSAFE = False
 
 from config import AGRO_EXE
-from robots.robot_OS07.src.agro_alerts import (
+from robots.robot_OS16.src.agro_alerts import (
     confirm_attention_popup,
     confirm_establishment_selection,
 )
-from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
-from robots.robot_OS07.src.agro_login import login_agro
-from robots.robot_OS07.src.notifier import notify_error
-from robots.robot_OS07.src.replacement_estab import wait_window_startswith
+from robots.robot_OS16.src.agro_app import kill_agro_process, start_agro
+from robots.robot_OS16.src.agro_login import login_agro
+from robots.robot_OS16.src.notifier import notify_error
+from robots.robot_OS16.src.replacement_estab import wait_window_startswith
 
 ESTABS_COM_CHAVE_NFE = {"26", "68", "71"}
 

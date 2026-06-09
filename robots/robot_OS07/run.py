@@ -14,4 +14,11 @@ class Robot(BaseRobot):
     robot_id = 11
 
     def run(self) -> None:
-        run_once()
+        import time
+        while True:
+            try:
+                run_once(log_id=self.log_id)
+            except Exception as e:
+                print(f"Erro no ciclo OS07: {e}")
+            print("Aguardando 20 segundos antes do próximo ciclo...\n")
+            time.sleep(20)
