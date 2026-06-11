@@ -1,7 +1,7 @@
 """Worker agent — runs on every machine.
 
-On startup it registers itself in U_ROBOT_WORKER using the machine's real
-hostname (no hardcoded computer name). It then loops:
+On startup it registers itself in U_ROBOT_WORKER using COMPUTADOR_ROBO
+(from config/.env). It then loops:
 
   1. Send heartbeat to U_ROBOT_WORKER
   2. Try to claim one PENDENTE task via SELECT FOR UPDATE SKIP LOCKED
@@ -20,10 +20,10 @@ import ctypes
 import importlib
 import logging
 import signal
-import socket
 import threading
 import time
 
+from config import COMPUTADOR_ROBO
 from core.database import (
     buscar_executando,
     check_task_status,
@@ -36,6 +36,7 @@ from core.database import (
     register_worker,
     set_worker_offline,
 )
+from robots import ROBOT_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ def _inject_exception(thread_id: int, exc_type: type) -> bool:
 
 class WorkerAgent:
     def __init__(self) -> None:
-        self.name = socket.gethostname()
+        self.name = COMPUTADOR_ROBO
         self._running = True
         self._last_heartbeat: float = 0.0
 
@@ -130,7 +131,10 @@ class WorkerAgent:
 
         def _run() -> None:
             try:
-                module = importlib.import_module(f"robots.robot_{robot_id:03d}.run")
+                module_path = ROBOT_REGISTRY.get(robot_id)
+                if not module_path:
+                    raise ValueError(f"Nenhum módulo registrado para robot_id={robot_id}")
+                module = importlib.import_module(module_path)
                 robot = module.Robot(task)
                 robot.run()
             except _RobotCancelledError:

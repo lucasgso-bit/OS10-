@@ -68,7 +68,7 @@ def _fill_control(window, class_name: str, value: str, field_name: str) -> None:
 
 
 def login_agro(
-    usuario: str = "RPA.OS07",
+    usuario: str = "RPA.OS16",
     senha: str = AGRO_SENHA,
 ) -> None:
     """Fill Agro login credentials."""

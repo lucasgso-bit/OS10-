@@ -1,6 +1,11 @@
 """Send error notification emails for failed note processing.
 
 Screenshot → email with attachment → delete screenshot.
+
+Developed by: Matheus Correa
+Updated by: Matheus Correa
+Last Modified: 2026-06-08
+Version: 1.0.0
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ import pyautogui
 
 from config import EMAIL_FROM, EMAIL_PASSWORD, SMTP_HOST
 
-SCREENSHOT_DIR = r"C:\OuroSafra\IMGERRO"
+SCREENSHOT_DIR = r"C:\Users\rpa.dev1\Downloads\screen"
 EMAIL_TO = [
     "matheus.correa@ourosafra.com.br",
     "nfe.cereais@ourosafra.com.br",
@@ -88,10 +93,6 @@ _HTML_TEMPLATE = """\
             <th>Configuração</th>
             <td>{{NOTACONF}}</td>
           </tr>
-          <tr>
-            <th>Usuário</th>
-            <td>{{USUARIO}}</td>
-          </tr>
         </table>
         <h2>Dados do Documento</h2>
         <table class="info-table">
@@ -127,10 +128,8 @@ _HTML_TEMPLATE = """\
 
 
 def _build_html(nota: dict[str, Any], motivo: str) -> str:
-    usuario = os.environ.get("USERNAME") or os.environ.get("USER") or "desconhecido"
     fields = {
         "{{MOTIVO}}": html.escape(motivo),
-        "{{USUARIO}}": html.escape(usuario),
         "{{NOTACONF}}": html.escape(str(nota.get("NOTACONF") or "")),
         "{{PLACA}}": html.escape(str(nota.get("PLACA") or "")),
         "{{ORDEMCARGA}}": html.escape(str(nota.get("ORDEMCARGA") or "")),
@@ -153,11 +152,10 @@ def _send_email(nota: dict[str, Any], motivo: str, screenshot_path: str | None) 
     notaconf = nota.get("NOTACONF", "")
     estab = nota.get("ESTAB", "")
     nota_id = nota.get("U_FISCAL_IO_CONT_ID", "")
-    usuario = os.environ.get("USERNAME") or os.environ.get("USER") or "desconhecido"
 
     msg = MIMEMultipart()
     msg["Subject"] = (
-        f"VX360 - Erro | NOTACONF {notaconf} | Estab {estab} | ID {nota_id} | Usuário {usuario}"
+        f"VX360 - Erro | NOTACONF {notaconf} | Estab {estab} | ID {nota_id}"
     )
     msg["From"] = EMAIL_FROM
     msg["To"] = ", ".join(EMAIL_TO)

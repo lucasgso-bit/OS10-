@@ -4,30 +4,37 @@ Update robot execution status, search pending notes, and open Agro when needed.
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
-Last Modified: 2026-05-15
-Version: 1.0.0
+Last Modified: 2026-06-05
+Version: 2.0.0
 """
 
 from __future__ import annotations
 
 import time
 
-from config import AGRO_EXE
+from config import AGRO_EXE, COMPUTADOR_ROBO
+from core.database import (
+    buscar_executando,
+    buscar_proximo_pendente,
+    complete_task,
+    get_connection,
+    marcar_executando,
+)
 from robots.robot_OS07.src.agro_alerts import (
     confirm_attention_popup,
     confirm_establishment_selection,
 )
 from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS07.src.agro_login import login_agro
-from robots.robot_OS07.src.database import (
-    buscar_notas_pendentes,
-    buscar_U_ROBOT_LOG_EXECUCAO,
-    buscar_U_ROBOT_NEXT,
-    get_connection,
-    marcar_concluido,
-    marcar_executando,
-)
+from robots.robot_OS07.src.database import buscar_notas_pendentes
 from robots.robot_OS07.src.nota_router import process_note_by_config
+from robots.robot_OS07.src.queue_tracker import (
+    enviar_relatorio_final,
+    limpar_fila,
+    marcar_concluido,
+    marcar_erro,
+    popular_fila,
+)
 from robots.robot_OS07.src.replacement_estab import (
     switch_establishment,
     wait_window_startswith,
@@ -40,8 +47,7 @@ _INTERRUPT_CHECK_INTERVAL = 180  # 3 minutos
 def _esta_interrompido() -> bool:
     """Retorna True se o robô não está mais EXECUTANDO em U_ROBOT_LOG."""
     with get_connection() as conn:
-        with conn.cursor() as cursor:
-            return buscar_U_ROBOT_LOG_EXECUCAO(cursor) is None
+        return buscar_executando(conn, COMPUTADOR_ROBO) is None
 
 
 def _reiniciar_agro() -> None:
@@ -59,41 +65,54 @@ def _reiniciar_agro() -> None:
     print("Agro pronto para uso.")
 
 
-def run_once() -> None:
+def run_once(log_id: int | None = None) -> None:
     """Single execution cycle: fetch pending notes and process all of them.
 
-    Called by the platform worker. No loop, no sleep — returns when done.
+    When log_id is provided (called by the platform worker), task claiming and
+    completion are handled by the worker — this function only runs the business
+    logic. When log_id is None (legacy main.py path), this function claims and
+    completes its own task.
     """
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            executando = buscar_U_ROBOT_LOG_EXECUCAO(cursor)
+    platform_managed = log_id is not None
+
+    if not platform_managed:
+        with get_connection() as connection:
+            executando = buscar_executando(connection, COMPUTADOR_ROBO)
             if executando:
-                print(f"Robô já em execução (log_id={executando[0]}). Pulando ciclo.")
+                print(f"Robô já em execução (log_id={executando['u_robot_log_id']}). Pulando ciclo.")
                 return
 
-            proximo = buscar_U_ROBOT_NEXT(cursor)
+            proximo = buscar_proximo_pendente(connection, COMPUTADOR_ROBO)
             if not proximo:
                 print("Nenhuma tarefa pendente na fila.")
                 return
 
-            log_id = proximo[0]
-
-        marcar_executando(connection, log_id)
-        print(f"Tarefa log_id={log_id} marcada como EXECUTANDO.")
+            log_id = proximo["u_robot_log_id"]
+            marcar_executando(connection, log_id, COMPUTADOR_ROBO)
+            print(f"Tarefa log_id={log_id} marcada como EXECUTANDO.")
 
     print("\n Buscando notas...")
 
     with get_connection() as connection:
         notas = buscar_notas_pendentes(connection)
 
-    print(f"Notas encontradas: {len(notas)}")
+    print(f"Notas encontradas 07: {len(notas)}")
 
     if not notas:
         print("Nenhuma nota pendente.")
-        with get_connection() as connection:
-            marcar_concluido(connection, log_id)
-        print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
+        if not platform_managed:
+            with get_connection() as connection:
+                complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
+            print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
         return
+
+    # Limpa fila anterior deste usuário e popula com estimativas de tempo
+    try:
+        with get_connection() as connection:
+            limpar_fila(connection)
+            popular_fila(connection, notas)
+    except Exception as exc:
+        print(f"[queue_tracker] Erro ao popular fila (não bloqueia execução): {exc}")
 
     print("Iniciando Agro...")
     kill_agro_process("Agro3C.exe")
@@ -121,15 +140,18 @@ def run_once() -> None:
                 return
             ultimo_check = time.time()
 
+        id_nota = nota.get("U_FISCAL_IO_CONT_ID")
         try:
-            id_nota = nota.get("U_FISCAL_IO_CONT_ID")
             estab_nota = int(nota["ESTAB"])
 
             print(f"\n-> Processando nota ID: {id_nota} | Estab: {estab_nota}")
 
             switched = switch_establishment(estab_nota)
             if not switched:
-                print(f"Tela de seleção de estabelecimento não apareceu para nota {id_nota}. Reiniciando Agro e pulando nota.")
+                msg_err = f"Tela de seleção de estabelecimento não apareceu (nota {id_nota}). Agro reiniciado."
+                print(msg_err)
+                with get_connection() as connection:
+                    marcar_erro(connection, id_nota, msg_err)
                 _reiniciar_agro()
                 continue
 
@@ -139,15 +161,38 @@ def run_once() -> None:
 
             if processed:
                 print("Nota processada com sucesso")
+                try:
+                    with get_connection() as connection:
+                        marcar_concluido(connection, id_nota)
+                except Exception as exc:
+                    print(f"[queue_tracker] marcar_concluido falhou: {exc}")
             else:
                 print("Falha ao processar nota")
+                try:
+                    with get_connection() as connection:
+                        marcar_erro(connection, id_nota, "Falha no processamento (sem exceção)")
+                except Exception as exc:
+                    print(f"[queue_tracker] marcar_erro falhou: {exc}")
 
         except Exception as e:
-            print(f"Erro na nota {nota.get('U_FISCAL_IO_CONT_ID')}: {e}")
+            print(f"Erro na nota {id_nota}: {e}")
+            try:
+                with get_connection() as connection:
+                    marcar_erro(connection, id_nota, str(e))
+            except Exception as exc:
+                print(f"[queue_tracker] marcar_erro falhou: {exc}")
 
-    with get_connection() as connection:
-        marcar_concluido(connection, log_id)
-    print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
+    # Envia relatório final com totais de tentativas, sucesso e erro
+    try:
+        with get_connection() as connection:
+            enviar_relatorio_final(connection)
+    except Exception as exc:
+        print(f"[queue_tracker] Erro ao enviar relatório final: {exc}")
+
+    if not platform_managed:
+        with get_connection() as connection:
+            complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
+        print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
 
 
 def run() -> None:
