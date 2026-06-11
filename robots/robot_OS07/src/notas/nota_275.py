@@ -3,8 +3,8 @@ Process NOTACONF 275 notes.
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
-Last Modified: 2026-06-02
-Version: 2.4.0
+Last Modified: 2026-06-11
+Version: 2.5.0
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import time
 from typing import Any
 
 import pyautogui
+import pygetwindow as gw
 
 from robots.robot_OS07.src.notifier import notify_error
 from robots.robot_OS07.src.replacement_estab import wait_window_startswith
@@ -68,27 +69,133 @@ CONSULTA_CONTRATO_FOCUS_Y = 200
 # =========================
 
 
+def _get_window_by_title_start(title: str) -> gw.Win32Window | None:
+    """Return the first visible window whose title starts with the provided text."""
+    title_normalized = title.strip().lower()
+
+    for window in gw.getAllWindows():
+        window_title = (window.title or "").strip().lower()
+
+        if window_title.startswith(title_normalized):
+            return window
+
+    return None
+
+
+def _handle_conceito_popup(timeout_seconds: float = 0.0) -> bool:
+    """Dismiss the transient 'Conceito' dialog when it appears."""
+    handled = False
+    deadline = time.time() + max(timeout_seconds, 0.0)
+    attempts = 0
+    max_attempts = 4
+
+    while True:
+        conceito_window = _get_window_by_title_start("Conceito")
+
+        if conceito_window is not None:
+            attempts += 1
+
+            try:
+                conceito_window.activate()
+            except Exception as exc:
+                print(f"AVISO: Não foi possível focar popup 'Conceito': {exc}")
+
+            time.sleep(0.2)
+            pyautogui.press("enter")
+            time.sleep(0.4)
+
+            handled = True
+            print("Popup 'Conceito' detectado e confirmado com OK.")
+
+            if attempts >= max_attempts:
+                return handled
+
+            continue
+
+        if time.time() >= deadline:
+            return handled
+
+        time.sleep(0.2)
+
+
+def _sleep_and_handle(seconds: float, check_interval: float = 0.25) -> None:
+    """Wait while continuously dismissing the transient 'Conceito' dialog."""
+    _handle_conceito_popup()
+
+    deadline = time.time() + max(seconds, 0.0)
+
+    while time.time() < deadline:
+        time.sleep(min(check_interval, max(deadline - time.time(), 0.0)))
+        _handle_conceito_popup()
+
+    _handle_conceito_popup()
+
+
+def _wait_window_startswith(title: str, timeout_seconds: int = 5) -> bool:
+    """Wait for a window while keeping the 'Conceito' dialog dismissed."""
+    deadline = time.time() + max(timeout_seconds, 0)
+
+    while time.time() <= deadline:
+        _handle_conceito_popup()
+
+        if wait_window_startswith(title, timeout_seconds=1):
+            _handle_conceito_popup()
+            return True
+
+        _handle_conceito_popup()
+
+    return False
+
+
+def _press(*args: Any, **kwargs: Any) -> None:
+    """Press keys while guarding against the transient 'Conceito' dialog."""
+    _handle_conceito_popup()
+    pyautogui.press(*args, **kwargs)
+    _handle_conceito_popup()
+
+
+def _hotkey(*args: Any, **kwargs: Any) -> None:
+    """Send a hotkey while guarding against the transient 'Conceito' dialog."""
+    _handle_conceito_popup()
+    pyautogui.hotkey(*args, **kwargs)
+    _handle_conceito_popup()
+
+
+def _write(*args: Any, **kwargs: Any) -> None:
+    """Write text while guarding against the transient 'Conceito' dialog."""
+    _handle_conceito_popup()
+    pyautogui.write(*args, **kwargs)
+    _handle_conceito_popup()
+
+
+def _click(*args: Any, **kwargs: Any) -> None:
+    """Click while guarding against the transient 'Conceito' dialog."""
+    _handle_conceito_popup()
+    pyautogui.click(*args, **kwargs)
+    _handle_conceito_popup()
+
+
 def _fill_inscricao_pessoa_275(
     inscricao: str,
     executar_alt_t: bool = True,
 ) -> None:
     """Preenche a inscrição na tela de seleção de endereço."""
-    time.sleep(4)
-    pyautogui.press("right", presses=2, interval=0.2)
-    time.sleep(0.2)
+    _sleep_and_handle(4)
+    _press("right", presses=2, interval=0.2)
+    _sleep_and_handle(0.2)
 
-    pyautogui.press("up")
-    time.sleep(0.2)
+    _press("up")
+    _sleep_and_handle(0.2)
 
-    pyautogui.write(inscricao, interval=0.03)
+    _write(inscricao, interval=0.03)
     print(f"Inscricao '{inscricao}' selecionada.")
 
-    time.sleep(2)
-    pyautogui.press("enter")
-    time.sleep(2)
+    _sleep_and_handle(2)
+    _press("enter")
+    _sleep_and_handle(2)
 
     if executar_alt_t:
-        pyautogui.hotkey("alt", "t")
+        _hotkey("alt", "t")
 
 
 def _focus_consulta_contratos_window(timeout: int = 7) -> bool:
@@ -111,12 +218,12 @@ def _open_consulta_contratos(nota: dict[str, Any]) -> bool:
             "Tela 'Nota Fiscal' nao encontrada antes de clicar em Contratos",
         )
 
-    time.sleep(1)
+    _sleep_and_handle(1)
 
     for tentativa in range(2):
         print(f"Clique no botao Contratos. Tentativa {tentativa + 1}/2.")
-        pyautogui.click(CONTRATOS_BUTTON_X, CONTRATOS_BUTTON_Y)
-        time.sleep(1)
+        _click(CONTRATOS_BUTTON_X, CONTRATOS_BUTTON_Y)
+        _sleep_and_handle(1)
 
         if _focus_consulta_contratos_window(timeout=5):
             print("Tela 'Consulta contratos' encontrada apos clicar em Contratos.")
@@ -142,36 +249,36 @@ def process_notaconf_275(nota: dict[str, Any]) -> bool:
         print_open_windows()
         return handle_error(nota, "Janela principal do Agro nao encontrada")
 
-    pyautogui.hotkey("alt", "n")
-    time.sleep(1)
+    _hotkey("alt", "n")
+    _sleep_and_handle(1)
 
-    pyautogui.press("enter")
-    time.sleep(1)
+    _press("enter")
+    _sleep_and_handle(1)
 
     if not (
-        wait_window_startswith("Filtrar NF - Cabecalho", 5)
-        or wait_window_startswith("Filtrar NF - Cabeçalho", 5)
-        or wait_window_startswith("Filtrar NF", 5)
-        or wait_window_startswith("Filtrar", 5)
+        _wait_window_startswith("Filtrar NF - Cabecalho", 5)
+        or _wait_window_startswith("Filtrar NF - Cabeçalho", 5)
+        or _wait_window_startswith("Filtrar NF", 5)
+        or _wait_window_startswith("Filtrar", 5)
     ):
         print("Tela de filtro nao encontrada.")
         return handle_error(nota, "Tela de filtro nao encontrada")
 
-    pyautogui.hotkey("alt", "v")
-    time.sleep(1)
+    _hotkey("alt", "v")
+    _sleep_and_handle(1)
 
     if not (
-        wait_window_startswith("Nota Fiscal", 10) or wait_window_startswith("Nota", 5)
+        _wait_window_startswith("Nota Fiscal", 10) or _wait_window_startswith("Nota", 5)
     ):
         print("Tela 'Nota Fiscal' nao carregou.")
         return handle_error(nota, "Tela 'Nota Fiscal' nao carregou")
 
-    pyautogui.hotkey("ctrl", "insert")
-    time.sleep(8)
+    _hotkey("ctrl", "insert")
+    _sleep_and_handle(8)
 
-    pyautogui.write("275", interval=0.03)
-    pyautogui.press("enter")
-    time.sleep(1)
+    _write("275", interval=0.03)
+    _press("enter")
+    _sleep_and_handle(1)
     process_dados_nfe_recebida(nota)
 
 
@@ -190,15 +297,15 @@ def process_dados_nfe_recebida(nota: dict[str, Any]) -> bool:
         return handle_error(nota, str(error))
 
     print("Inserindo pessoa/NUMEROCM...")
-    pyautogui.write(numerocm, interval=0.03)
+    _write(numerocm, interval=0.03)
     print(f"NUMEROCM '{numerocm}' preenchido.")
 
-    pyautogui.press("enter")
-    time.sleep(1)
+    _press("enter")
+    _sleep_and_handle(1)
 
-    if not wait_window_startswith(
+    if not _wait_window_startswith(
         "Selecao de Endereco", 5
-    ) and not wait_window_startswith("Seleção de Endereço", 5):
+    ) and not _wait_window_startswith("Seleção de Endereço", 5):
         print("Tela de endereco nao apareceu.")
         return handle_error(
             nota, "Tela 'Selecao de Endereco' nao apareceu apos inserir pessoa"
@@ -245,83 +352,83 @@ def process_consulta_contrato_275(nota: dict[str, Any], ddmmyy: str) -> bool:
         return handle_error(nota, "Tela 'Consulta contratos' nao encontrada")
 
     print(f"Tela 'Consulta contratos' encontrada. Contrato: {contrato}")
-    time.sleep(1)
+    _sleep_and_handle(1)
 
     # Clique apenas para garantir foco dentro da tela Consulta contratos.
-    pyautogui.click(CONSULTA_CONTRATO_FOCUS_X, CONSULTA_CONTRATO_FOCUS_Y)
-    time.sleep(0.5)
+    _click(CONSULTA_CONTRATO_FOCUS_X, CONSULTA_CONTRATO_FOCUS_Y)
+    _sleep_and_handle(0.5)
 
     print("Inserindo contrato...")
-    time.sleep(0.2)
-    pyautogui.press("tab", presses=6, interval=0.05)
-    time.sleep(0.2)
-    pyautogui.write(contrato, interval=0.03)
-    time.sleep(2)
-    pyautogui.press("enter")
-    time.sleep(0.2)
-    pyautogui.hotkey("ctrl", "p")
-    time.sleep(1)
+    _sleep_and_handle(0.2)
+    _press("tab", presses=6, interval=0.05)
+    _sleep_and_handle(0.2)
+    _write(contrato, interval=0.03)
+    _sleep_and_handle(2)
+    _press("enter")
+    _sleep_and_handle(0.2)
+    _hotkey("ctrl", "p")
+    _sleep_and_handle(1)
 
     # Atencao apos Ctrl+P = contrato NAO encontrado.
-    if wait_window_startswith("Atencao", timeout_seconds=3) or wait_window_startswith(
+    if _wait_window_startswith("Atencao", timeout_seconds=3) or _wait_window_startswith(
         "Atenção", timeout_seconds=3
     ):
         print("Contrato nao encontrado: popup 'Atencao' detectado apos Ctrl+P.")
         return handle_error(nota, f"Contrato '{contrato}' nao encontrado no Agro")
 
     print("Setando quantidade...")
-    pyautogui.press("tab", presses=3, interval=0.05)
-    time.sleep(2)
-    pyautogui.press("enter")
-    time.sleep(2)
-    pyautogui.press("enter")
-    time.sleep(0.2)
-    pyautogui.write(quantidade, interval=0.03)
-    time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.2)
-    pyautogui.hotkey("ctrl", "s")
-    time.sleep(1)
+    _press("tab", presses=3, interval=0.05)
+    _sleep_and_handle(2)
+    _press("enter")
+    _sleep_and_handle(2)
+    _press("enter")
+    _sleep_and_handle(0.2)
+    _write(quantidade, interval=0.03)
+    _sleep_and_handle(0.2)
+    _press("enter")
+    _sleep_and_handle(0.2)
+    _hotkey("ctrl", "s")
+    _sleep_and_handle(1)
 
     # Confirmacao de quantidade, se aparecer.
-    if wait_window_startswith("Atencao", timeout_seconds=2) or wait_window_startswith(
+    if _wait_window_startswith("Atencao", timeout_seconds=2) or _wait_window_startswith(
         "Atenção", timeout_seconds=2
     ):
-        pyautogui.hotkey("alt", "s")
-        time.sleep(1)
+        _hotkey("alt", "s")
+        _sleep_and_handle(1)
 
     print(f"Quantidade '{quantidade}' inserida e salva.")
 
     print("Preenchendo aba Nota Produtor...")
-    time.sleep(6)
-    pyautogui.hotkey("shift", "tab")
-    time.sleep(0.2)
-    pyautogui.press("right", presses=6, interval=0.05)
-    time.sleep(0.2)
-    pyautogui.press("tab", presses=4, interval=0.05)
-    time.sleep(0.2)
+    _sleep_and_handle(6)
+    _hotkey("shift", "tab")
+    _sleep_and_handle(0.2)
+    _press("right", presses=6, interval=0.05)
+    _sleep_and_handle(0.2)
+    _press("tab", presses=4, interval=0.05)
+    _sleep_and_handle(0.2)
 
     if chave_acesso:
-        pyautogui.write(chave_acesso, interval=0.03)
+        _write(chave_acesso, interval=0.03)
         print("Chave de acesso preenchida na aba Nota Produtor.")
     else:
         return handle_error(nota, "CHAVEACESSO nao encontrada para aba Nota Produtor")
 
-    time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.2)
-    pyautogui.press("up")
-    time.sleep(0.2)
-    pyautogui.press("right", presses=2, interval=0.05)
-    time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.2)
-    pyautogui.write(ddmmyy, interval=0.03)
-    time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.2)
-    pyautogui.press("enter")
-    time.sleep(0.2)
+    _sleep_and_handle(0.2)
+    _press("enter")
+    _sleep_and_handle(0.2)
+    _press("up")
+    _sleep_and_handle(0.2)
+    _press("right", presses=2, interval=0.05)
+    _sleep_and_handle(0.2)
+    _press("enter")
+    _sleep_and_handle(0.2)
+    _write(ddmmyy, interval=0.03)
+    _sleep_and_handle(0.2)
+    _press("enter")
+    _sleep_and_handle(0.2)
+    _press("enter")
+    _sleep_and_handle(0.2)
     print(f"Aba Nota Produtor preenchida com data '{ddmmyy}'.")
 
     print("Inserindo classificacao...")
@@ -354,38 +461,38 @@ def _process_classificacao_275(
     if not classif_local:
         return handle_error(nota, "CLASSIF_LOCAL nao encontrado na nota")
 
-    pyautogui.press("tab", presses=4, interval=0.1)
-    time.sleep(0.1)
-    pyautogui.press("right", presses=2, interval=0.1)
-    time.sleep(0.1)
-    pyautogui.press("enter")
-    time.sleep(0.5)
+    _press("tab", presses=4, interval=0.1)
+    _sleep_and_handle(0.1)
+    _press("right", presses=2, interval=0.1)
+    _sleep_and_handle(0.1)
+    _press("enter")
+    _sleep_and_handle(0.5)
 
-    pyautogui.write(classif_local, interval=0.03)
+    _write(classif_local, interval=0.03)
     print(f"CLASSIF_LOCAL '{classif_local}' preenchido.")
 
-    pyautogui.press("enter", presses=7, interval=0.1)
-    time.sleep(0.5)
+    _press("enter", presses=7, interval=0.1)
+    _sleep_and_handle(0.5)
 
     if placa:
-        pyautogui.write(placa, interval=0.03)
+        _write(placa, interval=0.03)
         print(f"PLACA '{placa}' preenchida.")
     else:
         print("PLACA nao informada. Seguindo sem preencher.")
 
-    pyautogui.press("enter")
-    time.sleep(0.5)
+    _press("enter")
+    _sleep_and_handle(0.5)
 
     if ordem_carga:
-        pyautogui.write(ordem_carga, interval=0.03)
+        _write(ordem_carga, interval=0.03)
         print(f"ORDEMCARGA '{ordem_carga}' preenchida.")
     else:
         print("ORDEMCARGA nao informada. Seguindo sem preencher.")
 
-    pyautogui.press("enter")
-    time.sleep(0.5)
-    pyautogui.hotkey("ctrl", "s")
-    time.sleep(1)
+    _press("enter")
+    _sleep_and_handle(0.5)
+    _hotkey("ctrl", "s")
+    _sleep_and_handle(1)
 
     if ordem_carga and not verificar_advertencia_apos_ordemcarga(nota):
         return False
@@ -397,12 +504,12 @@ def _process_financeiro_275(nota: dict[str, Any]) -> bool:
     """Save the financial screen when Pagamento com Duplicatas appears."""
     print("Verificando tela financeiro...")
 
-    if wait_window_startswith("Pagamento com Duplicatas", timeout_seconds=5):
+    if _wait_window_startswith("Pagamento com Duplicatas", timeout_seconds=5):
         print("Tela financeira encontrada.")
-        pyautogui.hotkey("ctrl", "p")
-        time.sleep(1)
-        pyautogui.hotkey("ctrl", "s")
-        time.sleep(1)
+        _hotkey("ctrl", "p")
+        _sleep_and_handle(1)
+        _hotkey("ctrl", "s")
+        _sleep_and_handle(1)
         return True
 
     print("Tela financeira nao apareceu. Seguindo fluxo.")
@@ -414,30 +521,30 @@ def _process_advertencias_275(nota: dict[str, Any]) -> bool:
     print("Verificando retorno para Nota Fiscal/Advertencias...")
 
     if not (
-        wait_window_startswith("[A]dvertencias", timeout_seconds=5)
-        or wait_window_startswith("[A]dvertências", timeout_seconds=5)
+        _wait_window_startswith("[A]dvertencias", timeout_seconds=5)
+        or _wait_window_startswith("[A]dvertências", timeout_seconds=5)
     ):
         print("Tela Advertencias/Nota Fiscal nao apareceu.")
         print_open_windows()
         return True
 
     print("Tela Advertencias encontrada.")
-    time.sleep(3)
+    _sleep_and_handle(3)
     if not (focus_window("[A]dvertencias") or focus_window("[A]dvertências")):
         print("Nao foi possivel focar Advertencias.")
 
     if advertencias_tem_erro_critico():
         print("Advertencias com erro critico: linha vermelha detectada.")
         notify_error(nota, "Advertencia com erro critico na nota fiscal")
-        pyautogui.press("escape")
-        time.sleep(1)
+        _press("escape")
+        _sleep_and_handle(1)
         restart_agro()
         return False
 
-    pyautogui.hotkey("alt", "o")
-    time.sleep(1)
-    pyautogui.press("enter")
-    time.sleep(1)
+    _hotkey("alt", "o")
+    _sleep_and_handle(1)
+    _press("enter")
+    _sleep_and_handle(1)
 
     return True
 
@@ -462,11 +569,11 @@ def _process_impressao_transmissao_275(nota: dict[str, Any]) -> bool:
             "Tela 'Impressao de Nota Fiscal Eletronica' nao apareceu",
         )
 
-    time.sleep(0.3)
+    _sleep_and_handle(0.3)
 
     print("Tela de impressao encontrada. Enviando Ctrl+E para transmitir...")
-    time.sleep(1)
-    pyautogui.hotkey("ctrl", "e")
+    _sleep_and_handle(1)
+    _hotkey("ctrl", "e")
 
     print("Verificando popup de transmissao 'Agro'...")
     if not focus_window_startswith("Agro", timeout_seconds=10):
@@ -476,14 +583,14 @@ def _process_impressao_transmissao_275(nota: dict[str, Any]) -> bool:
         )
 
     print("Popup 'Agro' detectado. Confirmando transmissao...")
-    # pyautogui.press("enter")
-    time.sleep(10)
+    # _press("enter")
+    _sleep_and_handle(10)
 
-    pyautogui.hotkey("alt", "o")
-    time.sleep(1)
+    _hotkey("alt", "o")
+    _sleep_and_handle(1)
 
-    pyautogui.press("enter")
-    time.sleep(1)
+    _press("enter")
+    _sleep_and_handle(1)
 
     print("Fechando telas apos transmissao...")
     close_current_windows(times=3, delay_seconds=2)
@@ -526,20 +633,20 @@ def _process_chave_por_estab_275(nota: dict[str, Any], ddmmyy: str) -> bool:
         )
 
     print("Inserindo chave da NF-e...")
-    time.sleep(1)
-    pyautogui.write(chave_nf, interval=0.03)
-    time.sleep(1)
-    pyautogui.press("enter")
-    time.sleep(1)
-    pyautogui.press("enter")
-    time.sleep(1)
-    pyautogui.press("enter")
-    time.sleep(1)
-    pyautogui.hotkey("alt", "n")
-    time.sleep(1)
+    _sleep_and_handle(1)
+    _write(chave_nf, interval=0.03)
+    _sleep_and_handle(1)
+    _press("enter")
+    _sleep_and_handle(1)
+    _press("enter")
+    _sleep_and_handle(1)
+    _press("enter")
+    _sleep_and_handle(1)
+    _hotkey("alt", "n")
+    _sleep_and_handle(1)
 
     print("Verificando tela de endereco apos inserir chave...")
-    if wait_window_startswith("Selecao de Endereco", 5) or wait_window_startswith(
+    if _wait_window_startswith("Selecao de Endereco", 5) or _wait_window_startswith(
         "Seleção de Endereço", 5
     ):
         if inscricao:
@@ -563,19 +670,19 @@ def _alterar_data_nota_275(ddmmyy: str) -> bool:
     """Alter the NF date through the same keyboard sequence used in PowerShell."""
     print(f"Alterando data para '{ddmmyy}'...")
 
-    time.sleep(2)
-    pyautogui.hotkey("alt", "o")
-    time.sleep(1)
-    pyautogui.hotkey("alt", "o")
-    time.sleep(1)
-    pyautogui.hotkey("alt", "p")
-    time.sleep(1)
-    pyautogui.press("enter")
-    time.sleep(1)
-    pyautogui.write(ddmmyy, interval=0.03)
-    time.sleep(2)
-    pyautogui.press("enter")
-    time.sleep(1)
+    _sleep_and_handle(2)
+    _hotkey("alt", "o")
+    _sleep_and_handle(1)
+    _hotkey("alt", "o")
+    _sleep_and_handle(1)
+    _hotkey("alt", "p")
+    _sleep_and_handle(1)
+    _press("enter")
+    _sleep_and_handle(1)
+    _write(ddmmyy, interval=0.03)
+    _sleep_and_handle(2)
+    _press("enter")
+    _sleep_and_handle(1)
 
     return True
 
@@ -584,19 +691,19 @@ def _salvar_final_275() -> bool:
     """Run the final save sequence after date/key adjustments."""
     print("Executando salvamento final...")
 
-    time.sleep(5)
-    pyautogui.hotkey("ctrl", "s")
-    time.sleep(10)
-    pyautogui.hotkey("alt", "o")
-    time.sleep(1)
+    _sleep_and_handle(5)
+    _hotkey("ctrl", "s")
+    _sleep_and_handle(10)
+    _hotkey("alt", "o")
+    _sleep_and_handle(1)
 
-    time.sleep(5)
-    pyautogui.press("enter")
-    time.sleep(1)
-    pyautogui.press("enter")
-    time.sleep(8)
-    pyautogui.hotkey("ctrl", "s")
-    time.sleep(1)
+    _sleep_and_handle(5)
+    _press("enter")
+    _sleep_and_handle(1)
+    _press("enter")
+    _sleep_and_handle(8)
+    _hotkey("ctrl", "s")
+    _sleep_and_handle(1)
 
     print("Salvamento final executado.")
     return True

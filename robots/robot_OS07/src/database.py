@@ -67,9 +67,10 @@ WHERE -- OS_RPA_NOTA_07.STATUS = 100 AND
   AND (
         (
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 21
-         --   AND notaconf in ('225','232', '244', '270', '244')
+            AND notaconf in ('225','232', '244', '270', '285')
+            -- AND NOTACONF IN ('255','275','284','314') -- para teste, considerar apenas notas com essas configurações
             and ieemitente is not null
-           AND chaveacesso = '43260691495549003507550000004827691143403741'
+          -- AND chaveacesso = '42260685789782009441550050000278841785838097'
         )
         OR
         (

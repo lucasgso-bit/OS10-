@@ -230,19 +230,35 @@ def marcar_executando(conn: oracledb.Connection, log_id: int, computador: str) -
 
 
 def complete_task(
-    conn: oracledb.Connection, log_id: int, mensagem: str = "Executado com sucesso"
+    conn: oracledb.Connection,
+    log_id: int,
+    mensagem: str = "Executado com sucesso",
+    computer_name: str | None = None,
 ) -> None:
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            UPDATE U_ROBOT_LOG
-               SET STATUS        = 'CONCLUIDO',
-                   DTFINALIZACAO = SYSTIMESTAMP,
-                   MENSAGEM      = :msg
-             WHERE U_ROBOT_LOG_ID = :id
-            """,
-            {"msg": mensagem[:4000], "id": log_id},
-        )
+        if computer_name is not None:
+            cur.execute(
+                """
+                UPDATE U_ROBOT_LOG
+                   SET STATUS        = 'CONCLUIDO',
+                       DTFINALIZACAO = SYSTIMESTAMP,
+                       MENSAGEM      = :msg,
+                       COMPUTADOR    = :comp
+                 WHERE U_ROBOT_LOG_ID = :id
+                """,
+                {"msg": mensagem[:4000], "id": log_id, "comp": computer_name},
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE U_ROBOT_LOG
+                   SET STATUS        = 'CONCLUIDO',
+                       DTFINALIZACAO = SYSTIMESTAMP,
+                       MENSAGEM      = :msg
+                 WHERE U_ROBOT_LOG_ID = :id
+                """,
+                {"msg": mensagem[:4000], "id": log_id},
+            )
         conn.commit()
 
 

@@ -28,6 +28,13 @@ from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS07.src.agro_login import login_agro
 from robots.robot_OS07.src.database import buscar_notas_pendentes
 from robots.robot_OS07.src.nota_router import process_note_by_config
+from robots.robot_OS07.src.queue_tracker import (
+    enviar_relatorio_final,
+    limpar_fila,
+    marcar_concluido,
+    marcar_erro,
+    popular_fila,
+)
 from robots.robot_OS07.src.replacement_estab import (
     switch_establishment,
     wait_window_startswith,
@@ -95,9 +102,17 @@ def run_once(log_id: int | None = None) -> None:
         print("Nenhuma nota pendente.")
         if not platform_managed:
             with get_connection() as connection:
-                complete_task(connection, log_id)
+                complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
             print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
         return
+
+    # Limpa fila anterior deste usuário e popula com estimativas de tempo
+    try:
+        with get_connection() as connection:
+            limpar_fila(connection)
+            popular_fila(connection, notas)
+    except Exception as exc:
+        print(f"[queue_tracker] Erro ao popular fila (não bloqueia execução): {exc}")
 
     print("Iniciando Agro...")
     kill_agro_process("Agro3C.exe")
@@ -125,15 +140,18 @@ def run_once(log_id: int | None = None) -> None:
                 return
             ultimo_check = time.time()
 
+        id_nota = nota.get("U_FISCAL_IO_CONT_ID")
         try:
-            id_nota = nota.get("U_FISCAL_IO_CONT_ID")
             estab_nota = int(nota["ESTAB"])
 
             print(f"\n-> Processando nota ID: {id_nota} | Estab: {estab_nota}")
 
             switched = switch_establishment(estab_nota)
             if not switched:
-                print(f"Tela de seleção de estabelecimento não apareceu para nota {id_nota}. Reiniciando Agro e pulando nota.")
+                msg_err = f"Tela de seleção de estabelecimento não apareceu (nota {id_nota}). Agro reiniciado."
+                print(msg_err)
+                with get_connection() as connection:
+                    marcar_erro(connection, id_nota, msg_err)
                 _reiniciar_agro()
                 continue
 
@@ -143,15 +161,37 @@ def run_once(log_id: int | None = None) -> None:
 
             if processed:
                 print("Nota processada com sucesso")
+                try:
+                    with get_connection() as connection:
+                        marcar_concluido(connection, id_nota)
+                except Exception as exc:
+                    print(f"[queue_tracker] marcar_concluido falhou: {exc}")
             else:
                 print("Falha ao processar nota")
+                try:
+                    with get_connection() as connection:
+                        marcar_erro(connection, id_nota, "Falha no processamento (sem exceção)")
+                except Exception as exc:
+                    print(f"[queue_tracker] marcar_erro falhou: {exc}")
 
         except Exception as e:
-            print(f"Erro na nota {nota.get('U_FISCAL_IO_CONT_ID')}: {e}")
+            print(f"Erro na nota {id_nota}: {e}")
+            try:
+                with get_connection() as connection:
+                    marcar_erro(connection, id_nota, str(e))
+            except Exception as exc:
+                print(f"[queue_tracker] marcar_erro falhou: {exc}")
+
+    # Envia relatório final com totais de tentativas, sucesso e erro
+    try:
+        with get_connection() as connection:
+            enviar_relatorio_final(connection)
+    except Exception as exc:
+        print(f"[queue_tracker] Erro ao enviar relatório final: {exc}")
 
     if not platform_managed:
         with get_connection() as connection:
-            complete_task(connection, log_id)
+            complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
         print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
 
 

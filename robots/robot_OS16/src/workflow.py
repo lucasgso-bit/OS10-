@@ -276,7 +276,7 @@ def run_once(log_id: int | None = None) -> None:
 
         if not platform_managed:
             with get_connection() as connection:
-                complete_task(connection, log_id)
+                complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
             print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
 
         return
@@ -355,7 +355,7 @@ def run_once(log_id: int | None = None) -> None:
 
     if not platform_managed:
         with get_connection() as connection:
-            complete_task(connection, log_id)
+            complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
         print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
 
 
