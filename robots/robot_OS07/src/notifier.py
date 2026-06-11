@@ -22,10 +22,10 @@ from config import EMAIL_FROM, EMAIL_PASSWORD, SMTP_HOST
 SCREENSHOT_DIR = r"C:\OuroSafra\IMGERRO"
 EMAIL_TO = [
     "matheus.correa@ourosafra.com.br",
-    # "nfe.cereais@ourosafra.com.br",
-    # "alif.toledo@ourosafra.com.br",
-    # "isaque.ricardo@ourosafra.com.br",
-    # "hugo.arantes@ourosafra.com.br",
+    "nfe.cereais@ourosafra.com.br",
+    "alif.toledo@ourosafra.com.br",
+    "isaque.ricardo@ourosafra.com.br",
+    "hugo.arantes@ourosafra.com.br",
 ]
 
 _HTML_TEMPLATE = """\
