@@ -1,10 +1,14 @@
 """
-Process NOTACONF 314 notes.
+NOTACONF 314 Processing Module.
+
+Process NOTACONF 314 notes in Agro by loading received NF-e data, selecting
+address information when required, filling emission data, linking contract data,
+and completing fiscal/financial steps.
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
-Last Modified: 2026-06-02
-Version: 1.6.0
+Last Modified: 2026-06-09
+Version: 1.6.1
 """
 
 from __future__ import annotations
@@ -38,7 +42,7 @@ from robots.robot_OS07.src.notas.nota_utils import (
 
 
 def _focus_consulta_contratos_window(timeout: int = 7) -> bool:
-    """Foca na tela 'Consulta contratos'."""
+    """Focus the 'Consulta contratos' window."""
     for _ in range(timeout):
         for window in gw.getAllWindows():
             title = window.title.strip().lower()
@@ -55,13 +59,92 @@ def _focus_consulta_contratos_window(timeout: int = 7) -> bool:
     return False
 
 
+def _selecionar_ie_endereco(nota: dict[str, Any]) -> None:
+    """Select the state registration in the address selection screen."""
+    inscricao = str(nota.get("IEEMITENTE") or "").strip()
+
+    if inscricao:
+        pyautogui.press("right", presses=2)
+        time.sleep(0.2)
+
+        pyautogui.press("up")
+        time.sleep(0.2)
+
+        pyautogui.write(inscricao, interval=0.03)
+        time.sleep(0.2)
+
+        pyautogui.press("enter")
+        time.sleep(0.5)
+
+        print(f"Inscrição '{inscricao}' selecionada.")
+        return
+
+    print("IEEMITENTE não informado. Confirmando endereço padrão.")
+    pyautogui.press("enter", presses=6, interval=0.3)
+
+
+def _informar_numerocm_na_nota(nota: dict[str, Any]) -> None:
+    """Fill NUMEROCM in the Nota Fiscal lookup field and retry address selection."""
+    numerocm = str(nota.get("NUMEROCM") or "").strip()
+
+    if not numerocm:
+        print("NUMEROCM não encontrado para tentar seleção de endereço.")
+        return
+
+    if not focus_window("Nota Fiscal"):
+        print("Janela 'Nota Fiscal' não encontrada para informar NUMEROCM.")
+        return
+
+    time.sleep(0.5)
+
+    # Campo informado:
+    # Window title: Nota Fiscal
+    # Class: TFNfCab
+    # Control: [CLASS:TVsEditLookup; INSTANCE:20]
+    #
+    # Coordenada baseada no Window Info enviado:
+    # Mouse em X=239/Y=280 e janela em X=-8/Y=119.
+    # Relativo à janela: X=247/Y=161.
+    click_in_window("Nota Fiscal", 247, 161)
+    time.sleep(1)
+    click_in_window("Nota Fiscal", 247, 161)
+    time.sleep(0.3)
+
+    pyautogui.hotkey("ctrl", "space")
+    time.sleep(0.5)
+
+    pyautogui.hotkey("ctrl", "a")
+    time.sleep(0.2)
+
+    pyautogui.press("backspace")
+    time.sleep(0.2)
+
+    pyautogui.write(numerocm, interval=0.03)
+    time.sleep(0.3)
+
+    pyautogui.press("enter")
+    time.sleep(1)
+
+    print(f"NUMEROCM '{numerocm}' informado na Nota Fiscal.")
+
+    if wait_window_startswith("Seleção de Endereço", 5):
+        print("Tela de endereço apareceu após informar NUMEROCM.")
+        _selecionar_ie_endereco(nota)
+        return
+
+    print(
+        "Tela de endereço não apareceu após informar NUMEROCM. "
+        "Continuando o processo."
+    )
+
+
 # =========================
 # PROCESSO PRINCIPAL
 # =========================
 
 
 def process_notaconf_314(nota: dict[str, Any]) -> bool:
-    """Fluxo principal NOTACONF 314."""
+    """Process the main NOTACONF 314 flow."""
     print("Processando NOTACONF 314...")
 
     if not focus_window("AGRO-AG"):
@@ -114,7 +197,7 @@ def process_notaconf_314(nota: dict[str, Any]) -> bool:
 
 
 def process_dados_nfe_recebida(nota: dict[str, Any]) -> bool:
-    """Processa tela de NF-e recebida."""
+    """Process the received NF-e screen."""
     chave_acesso = str(nota.get("CHAVEACESSO") or "").strip()
 
     if not chave_acesso:
@@ -158,29 +241,11 @@ def process_dados_nfe_recebida(nota: dict[str, Any]) -> bool:
     # =========================
     if wait_window_startswith("Seleção de Endereço", 10):
         print("Tela de endereço encontrada.")
+        _selecionar_ie_endereco(nota)
 
-        inscricao = str(nota.get("IEEMITENTE") or "").strip()
-
-        if inscricao:
-            pyautogui.press("right", presses=2)
-            pyautogui.press("up")
-            pyautogui.write(inscricao, interval=0.03)
-            pyautogui.press("enter")
-
-            print(f"Inscrição '{inscricao}' selecionada.")
-        else:
-            pyautogui.press("enter")
-            pyautogui.press("enter")
-            pyautogui.press("enter")
-            pyautogui.press("enter")
-            pyautogui.press("enter")
-            pyautogui.press("enter")
     else:
-        print("Tela de endereço não apareceu. Continuando sem selecionar endereço.")
-        time.sleep(0.5)
-        for _ in range(6):
-            pyautogui.press("enter")
-            time.sleep(0.3)
+        print("Tela de endereço não apareceu. Tentando informar NUMEROCM na Nota Fiscal.")
+        _informar_numerocm_na_nota(nota)
 
     # =========================
     # DATA EMISSÃO
@@ -231,8 +296,7 @@ def process_dados_nfe_recebida(nota: dict[str, Any]) -> bool:
 
 
 def process_consulta_contrato(nota: dict[str, Any]) -> bool:
-    """Processa contrato + quantidade + classificação + placa + ordem + financeiro."""
-
+    """Process contract, quantity, classification, load order, and financial flow."""
     contrato = str(nota.get("CONTRATO") or "").strip()
     quantidade = str(nota.get("QUANTIDADE") or "").strip()
     classif_local = str(nota.get("CLASSIF_LOCAL") or "").strip()
@@ -348,12 +412,15 @@ def process_consulta_contrato(nota: dict[str, Any]) -> bool:
 
                 return handle_error(
                     nota,
-                    f"Quantidade ajustada menor que informada. Retorno: {valor_campo} | Digitado: {quantidade}",
+                    (
+                        "Quantidade ajustada menor que informada. "
+                        f"Retorno: {valor_campo} | Digitado: {quantidade}"
+                    ),
                 )
 
         except (InvalidOperation, Exception):
             print(
-                f"AVISO: Não foi possível validar quantidade via clipboard. "
+                "AVISO: Não foi possível validar quantidade via clipboard. "
                 f"Campo='{valor_campo[:80]}' | Digitado='{quantidade}' — continuando."
             )
 
@@ -472,9 +539,9 @@ def process_consulta_contrato(nota: dict[str, Any]) -> bool:
             restart_agro()
             return False
 
+        print("ALT O")
         pyautogui.hotkey("alt", "o")
         time.sleep(1)
-
         pyautogui.press("enter")
         time.sleep(1)
         pyautogui.press("enter")
@@ -487,6 +554,7 @@ def process_consulta_contrato(nota: dict[str, Any]) -> bool:
         print_open_windows()
 
     time.sleep(5)
+
     # =========================
     # FECHAR TELAS
     # =========================

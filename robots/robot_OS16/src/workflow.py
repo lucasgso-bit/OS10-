@@ -269,7 +269,7 @@ def run_once(log_id: int | None = None) -> None:
     with get_connection() as connection:
         notas = buscar_notas_pendentes(connection)
 
-    print(f"Notas encontradas: {len(notas)}")
+    print(f"Notas encontradas 16: {len(notas)}")
 
     if not notas:
         print("Nenhuma nota pendente.")

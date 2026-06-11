@@ -61,16 +61,15 @@ def buscar_notas_pendentes(connection: oracledb.Connection) -> list[dict[str, An
 FROM OS_RPA_NOTA_07
 INNER JOIN CONCEITOPESSOA
     ON CONCEITOPESSOA.NUMEROCM = OS_RPA_NOTA_07.NUMEROCM
-WHERE OS_RPA_NOTA_07.STATUS = 100
-  AND CONCEITOPESSOA.CONCEITO <> 98
+WHERE -- OS_RPA_NOTA_07.STATUS = 100 AND 
+  
+  CONCEITOPESSOA.CONCEITO <> 98
   AND (
         (
-           -- estab <> 67 and
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 21
-            AND notaconf in ('225','232', '244', '270', '244')
-         --   AND   notaconf in ('225','232')
+         --   AND notaconf in ('225','232', '244', '270', '244')
             and ieemitente is not null
-           -- and chaveacesso ='35260608032953000143550010000004221860859264'
+           AND chaveacesso = '43260691495549003507550000004827691143403741'
         )
         OR
         (
