@@ -40,7 +40,6 @@ from robots.robot_OS07.src.replacement_estab import (
     wait_window_startswith,
 )
 
-
 _INTERRUPT_CHECK_INTERVAL = 180  # 3 minutos
 
 
@@ -79,7 +78,9 @@ def run_once(log_id: int | None = None) -> None:
         with get_connection() as connection:
             executando = buscar_executando(connection, COMPUTADOR_ROBO)
             if executando:
-                print(f"Robô já em execução (log_id={executando['u_robot_log_id']}). Pulando ciclo.")
+                print(
+                    f"Robô já em execução (log_id={executando['u_robot_log_id']}). Pulando ciclo."
+                )
                 return
 
             proximo = buscar_proximo_pendente(connection, COMPUTADOR_ROBO)
@@ -91,7 +92,7 @@ def run_once(log_id: int | None = None) -> None:
             marcar_executando(connection, log_id, COMPUTADOR_ROBO)
             print(f"Tarefa log_id={log_id} marcada como EXECUTANDO.")
 
-    print("\n Buscando notas...")
+    print("\n Buscando notas OS07...")
 
     with get_connection() as connection:
         notas = buscar_notas_pendentes(connection)
@@ -136,7 +137,9 @@ def run_once(log_id: int | None = None) -> None:
         # A cada 3 minutos, consulta U_ROBOT_LOG para ver se o robô foi interrompido
         if time.time() - ultimo_check >= _INTERRUPT_CHECK_INTERVAL:
             if _esta_interrompido():
-                print(f"Robô interrompido externamente (log_id={log_id}). Parando processamento.")
+                print(
+                    f"Robô interrompido externamente (log_id={log_id}). Parando processamento."
+                )
                 return
             ultimo_check = time.time()
 
@@ -170,7 +173,9 @@ def run_once(log_id: int | None = None) -> None:
                 print("Falha ao processar nota")
                 try:
                     with get_connection() as connection:
-                        marcar_erro(connection, id_nota, "Falha no processamento (sem exceção)")
+                        marcar_erro(
+                            connection, id_nota, "Falha no processamento (sem exceção)"
+                        )
                 except Exception as exc:
                     print(f"[queue_tracker] marcar_erro falhou: {exc}")
 

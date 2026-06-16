@@ -118,6 +118,23 @@ class WorkerAgent:
             time.sleep(_SLEEP_IDLE)
             return
 
+        # Keep claiming until we find a task with a registered module.
+        while task and not ROBOT_REGISTRY.get(task["robot_id"]):
+            logger.warning(
+                "Nenhum módulo registrado para robot_id=%d (log_id=%d) — "
+                "marcando ERRO e tentando próximo.",
+                task["robot_id"],
+                task["log_id"],
+            )
+            with get_connection() as conn:
+                fail_task(conn, task["log_id"], f"Nenhum módulo registrado para robot_id={task['robot_id']}")
+            with get_connection() as conn:
+                task = claim_task(conn, self.name)
+
+        if not task:
+            time.sleep(_SLEEP_IDLE)
+            return
+
         self._execute(task)
 
     def _execute(self, task: dict) -> None:

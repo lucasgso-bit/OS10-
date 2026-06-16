@@ -179,18 +179,18 @@ def claim_task(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] 
     return {"log_id": int(log_id), "robot_id": int(robot_id)}
 
 
-def claim_any_task(conn: oracledb.Connection, computer_name: str) -> dict[str, Any] | None:
+def claim_any_task(
+    conn: oracledb.Connection, computer_name: str
+) -> dict[str, Any] | None:
     """Claim the next PENDENTE task regardless of COMPUTADOR assignment."""
     with conn.cursor() as cur:
-        cur.execute(
-            """
+        cur.execute("""
             SELECT U_ROBOT_LOG_ID, U_ROBOT_ID
               FROM U_ROBOT_LOG
              WHERE STATUS = 'PENDENTE'
                AND ROWNUM = 1
                FOR UPDATE SKIP LOCKED
-            """
-        )
+            """)
         row = cur.fetchone()
 
         if not row:
@@ -203,7 +203,7 @@ def claim_any_task(conn: oracledb.Connection, computer_name: str) -> dict[str, A
             UPDATE U_ROBOT_LOG
                SET STATUS          = 'EXECUTANDO',
                    COMPUTADOR      = :comp,
-                   DTINICIALIZACAO = SYSTIMESTAMP
+                   DT_INICIO = SYSTIMESTAMP
              WHERE U_ROBOT_LOG_ID  = :id
             """,
             {"id": log_id, "comp": computer_name},

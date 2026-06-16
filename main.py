@@ -11,7 +11,7 @@ Version: 3.0.0
 import importlib
 import time
 
-from core.database import claim_any_task, get_connection, init_oracle_client
+from core.database import claim_any_task, fail_task, get_connection, init_oracle_client
 from robots import ROBOT_REGISTRY
 
 _SLEEP_IDLE = 30  # segundos de espera quando a fila está vazia
@@ -35,8 +35,9 @@ def main() -> None:
             module_path = ROBOT_REGISTRY.get(robot_id)
 
             if not module_path:
-                print(f"Nenhum módulo registrado para robot_id={robot_id}.")
-                time.sleep(_SLEEP_IDLE)
+                print(f"Nenhum módulo registrado para robot_id={robot_id} (log_id={task['log_id']}) — marcando ERRO e tentando próximo.")
+                with get_connection() as conn:
+                    fail_task(conn, task["log_id"], f"Nenhum módulo registrado para robot_id={robot_id}")
                 continue
 
             module = importlib.import_module(module_path)
