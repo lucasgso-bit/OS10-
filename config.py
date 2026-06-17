@@ -32,9 +32,11 @@ DSN_DB = os.getenv("DSN_DB", "")
 CLIENT_PATH = os.getenv("CLIENT_PATH", "")
 
 AGRO_EXE = os.getenv("AGRO_EXE", r"C:\Viasoft\Client\Agro\agro3c.exe")
+FINAGRO_EXE = os.getenv("FINAGRO_EXE", r"C:\Viasoft\Client\Agro\FinAgro3C.exe")
 COMPUTADOR_ROBO: str = os.getenv("COMPUTADOR_ROBO") or getpass.getuser()
 AGRO_USUARIO = os.getenv("AGRO_USUARIO", "RPA.OS07")
 AGRO_SENHA = os.getenv("AGRO_SENHA", "")
+OS18_SMTP_TO = os.getenv("OS18_SMTP_TO", "joao.netto@ourosafra.com.br")
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 EMAIL_FROM = os.getenv("EMAIL_FROM", "")
