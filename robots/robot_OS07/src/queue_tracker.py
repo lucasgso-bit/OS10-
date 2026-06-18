@@ -117,51 +117,56 @@ def popular_fila(
     )
 
 
-def claim_next_nota(
-    conn: oracledb.Connection, computador: str
-) -> dict[str, Any] | None:
-    """Atomically claim the next unclaimed PENDENTE note from the shared queue.
+_BATCH_SIZE = 10  # notas por lote por máquina
 
-    Uses FOR UPDATE SKIP LOCKED so two machines running simultaneously never
-    receive the same note. Returns None when all notes are claimed or processed.
+
+def claim_next_batch(
+    conn: oracledb.Connection, computador: str
+) -> list[dict[str, Any]]:
+    """Atomically claim the next batch of PENDENTE notes from the shared queue.
+
+    Claims up to _BATCH_SIZE notes at once via FOR UPDATE SKIP LOCKED.
+    Two machines running simultaneously always receive different notes.
+    Returns an empty list when the queue is exhausted.
     """
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT U_OS07_FILA_ID, CONT_ID, NUMERONOTA, NOTACONF, ESTAB
               FROM U_OS07_FILA
              WHERE STATUS     = 'PENDENTE'
                AND COMPUTADOR IS NULL
                AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
              ORDER BY POSICAO
-             FETCH FIRST 1 ROW ONLY
+             FETCH FIRST {_BATCH_SIZE} ROWS ONLY
                FOR UPDATE SKIP LOCKED
             """
         )
-        row = cur.fetchone()
-        if not row:
-            return None
+        rows = cur.fetchall()
+        if not rows:
+            return []
 
-        fila_id, cont_id, numeronota, notaconf, estab = row
-
-        cur.execute(
+        cur.executemany(
             """
             UPDATE U_OS07_FILA
                SET STATUS     = 'EXECUTANDO',
                    COMPUTADOR = :comp
              WHERE U_OS07_FILA_ID = :id
             """,
-            {"comp": computador, "id": fila_id},
+            [{"comp": computador, "id": row[0]} for row in rows],
         )
         conn.commit()
 
-    return {
-        "U_OS07_FILA_ID": int(fila_id),
-        "CONT_ID": cont_id,
-        "NUMERONOTA": numeronota,
-        "NOTACONF": notaconf,
-        "ESTAB": estab,
-    }
+    return [
+        {
+            "U_OS07_FILA_ID": int(row[0]),
+            "CONT_ID": row[1],
+            "NUMERONOTA": row[2],
+            "NOTACONF": row[3],
+            "ESTAB": row[4],
+        }
+        for row in rows
+    ]
 
 
 def marcar_concluido(

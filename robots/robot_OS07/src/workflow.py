@@ -29,7 +29,7 @@ from robots.robot_OS07.src.agro_login import login_agro
 from robots.robot_OS07.src.database import buscar_nota_by_id, buscar_notas_pendentes
 from robots.robot_OS07.src.nota_router import process_note_by_config
 from robots.robot_OS07.src.queue_tracker import (
-    claim_next_nota,
+    claim_next_batch,
     enviar_relatorio_final,
     limpar_fila,
     marcar_concluido,
@@ -154,69 +154,81 @@ def run_once(log_id: int | None = None) -> None:
                 return
             ultimo_check = time.time()
 
-        # Claim a nota atomicamente — nunca retorna a mesma nota para 2 máquinas
+        # Claim lote de 10 notas atomicamente — as duas máquinas nunca recebem a mesma nota
         with get_connection() as connection:
-            claimed = claim_next_nota(connection, COMPUTADOR_ROBO)
+            lote = claim_next_batch(connection, COMPUTADOR_ROBO)
 
-        if claimed is None:
+        if not lote:
             print("Fila vazia — todas as notas foram processadas ou estão sendo processadas.")
             break
 
-        cont_id = claimed["CONT_ID"]
-        nota = notas_by_id.get(cont_id)
+        print(f"Lote de {len(lote)} nota(s) obtido.")
 
-        if nota is None:
-            # Nota foi inserida pela outra máquina — busca direto no banco
-            with get_connection() as connection:
-                nota = buscar_nota_by_id(connection, cont_id)
+        for claimed in lote:
+            # A cada 3 minutos, verifica interrupção também dentro do lote
+            if time.time() - ultimo_check >= _INTERRUPT_CHECK_INTERVAL:
+                if _esta_interrompido():
+                    print(
+                        f"Robô interrompido externamente (log_id={log_id}). Parando processamento."
+                    )
+                    return
+                ultimo_check = time.time()
+
+            cont_id = claimed["CONT_ID"]
+            nota = notas_by_id.get(cont_id)
+
             if nota is None:
-                print(f"Nota CONT_ID={cont_id} não encontrada. Marcando erro.")
+                # Nota foi inserida pela outra máquina — busca direto no banco
                 with get_connection() as connection:
-                    marcar_erro(connection, cont_id, COMPUTADOR_ROBO, "Nota não encontrada no banco")
-                continue
+                    nota = buscar_nota_by_id(connection, cont_id)
+                if nota is None:
+                    print(f"Nota CONT_ID={cont_id} não encontrada. Marcando erro.")
+                    with get_connection() as connection:
+                        marcar_erro(connection, cont_id, COMPUTADOR_ROBO, "Nota não encontrada no banco")
+                    continue
 
-        id_nota = nota.get("U_FISCAL_IO_CONT_ID")
-        try:
-            estab_nota = int(nota["ESTAB"])
-            print(f"\n-> Processando nota ID: {id_nota} | Estab: {estab_nota}")
+            id_nota = nota.get("U_FISCAL_IO_CONT_ID")
+            try:
+                estab_nota = int(nota["ESTAB"])
+                print(f"\n-> Processando nota ID: {id_nota} | Estab: {estab_nota}")
 
-            switched = switch_establishment(estab_nota)
-            if not switched:
-                msg_err = f"Tela de seleção de estabelecimento não apareceu (nota {id_nota}). Agro reiniciado."
-                print(msg_err)
-                with get_connection() as connection:
-                    marcar_erro(connection, id_nota, COMPUTADOR_ROBO, msg_err)
-                _reiniciar_agro()
-                continue
+                switched = switch_establishment(estab_nota)
+                if not switched:
+                    msg_err = f"Tela de seleção de estabelecimento não apareceu (nota {id_nota}). Agro reiniciado."
+                    print(msg_err)
+                    with get_connection() as connection:
+                        marcar_erro(connection, id_nota, COMPUTADOR_ROBO, msg_err)
+                    _reiniciar_agro()
+                    continue
 
-            print("Troca de estabelecimento realizada.")
+                print("Troca de estabelecimento realizada.")
 
-            processed = process_note_by_config(nota)
+                processed = process_note_by_config(nota)
 
-            if processed:
-                print("Nota processada com sucesso")
+                if processed:
+                    print("Nota processada com sucesso")
+                    try:
+                        with get_connection() as connection:
+                            marcar_concluido(connection, id_nota, COMPUTADOR_ROBO)
+                    except Exception as exc:
+                        print(f"[queue_tracker] marcar_concluido falhou: {exc}")
+                else:
+                    print("Falha ao processar nota")
+                    try:
+                        with get_connection() as connection:
+                            marcar_erro(
+                                connection, id_nota, COMPUTADOR_ROBO, "Falha no processamento (sem exceção)"
+                            )
+                    except Exception as exc:
+                        print(f"[queue_tracker] marcar_erro falhou: {exc}")
+
+            except Exception as e:
+                print(f"Erro na nota {id_nota}: {e}")
                 try:
                     with get_connection() as connection:
-                        marcar_concluido(connection, id_nota, COMPUTADOR_ROBO)
-                except Exception as exc:
-                    print(f"[queue_tracker] marcar_concluido falhou: {exc}")
-            else:
-                print("Falha ao processar nota")
-                try:
-                    with get_connection() as connection:
-                        marcar_erro(
-                            connection, id_nota, COMPUTADOR_ROBO, "Falha no processamento (sem exceção)"
-                        )
+                        marcar_erro(connection, id_nota, COMPUTADOR_ROBO, str(e))
                 except Exception as exc:
                     print(f"[queue_tracker] marcar_erro falhou: {exc}")
-
-        except Exception as e:
-            print(f"Erro na nota {id_nota}: {e}")
-            try:
-                with get_connection() as connection:
-                    marcar_erro(connection, id_nota, COMPUTADOR_ROBO, str(e))
-            except Exception as exc:
-                print(f"[queue_tracker] marcar_erro falhou: {exc}")
 
     # Envia relatório final com totais desta máquina hoje
     try:
