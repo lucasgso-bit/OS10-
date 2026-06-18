@@ -41,7 +41,8 @@ def buscar_notas_pendentes(connection: oracledb.Connection) -> list[dict[str, An
         AND NFCAB.NPROTAUTORIZA IS NULL  
         AND NFCAB.STATUS <> 'C'  
         AND NFCFG.EMITENFE = 'S'  
-        AND NFCAB.NOTACONF IN (209,210,211,229,230,241,303,342,343,394)  
+        AND NFCAB.NOTACONF IN (209,210,211,229,230,241,303,342,343,394) 
+        and NFCAB.ESTAB NOT IN (26) 
         ORDER BY NFCAB.ESTAB """
 
     with connection.cursor() as cursor:
