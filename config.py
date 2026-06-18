@@ -36,6 +36,7 @@ FINAGRO_EXE = os.getenv("FINAGRO_EXE", r"C:\Viasoft\Client\Agro\FinAgro3C.exe")
 COMPUTADOR_ROBO: str = os.getenv("COMPUTADOR_ROBO") or getpass.getuser()
 AGRO_USUARIO = os.getenv("AGRO_USUARIO", "RPA.OS07")
 AGRO_SENHA = os.getenv("AGRO_SENHA", "")
+OS11_SERVICO_FIXO: int = int(os.getenv("OS11_SERVICO_FIXO", "30"))
 OS18_SMTP_TO = os.getenv("OS18_SMTP_TO", "joao.netto@ourosafra.com.br")
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
