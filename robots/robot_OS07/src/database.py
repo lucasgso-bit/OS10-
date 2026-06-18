@@ -6,148 +6,91 @@ exclusive to the OS07 robot.
 
 Developed by: Matheus Correa
 Updated by: Matheus Correa
-Last Modified: 2026-06-05
-Version: 2.0.0
+Last Modified: 2026-06-18
+Version: 2.1.0
 """
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 import oracledb
 
 
 def buscar_notas_pendentes(connection: oracledb.Connection) -> list[dict[str, Any]]:
-    """Fetch pending OS07 records from Oracle."""
+    """Fetch pending OS07 records not already claimed in today's queue.
+
+    Notes already present in U_OS07_FILA today (regardless of machine) are
+    excluded so two machines never pick up the same note.
+    """
     sql = """
         SELECT
-  OS_RPA_NOTA_07.U_FISCAL_IO_CONT_ID,
-  OS_RPA_NOTA_07.CHAVEACESSO,
-  OS_RPA_NOTA_07.DTEMISS,
-  OS_RPA_NOTA_07.NUMERONOTA,
-  OS_RPA_NOTA_07.SERIE,
-  OS_RPA_NOTA_07.CNPJF,
-  OS_RPA_NOTA_07.IEEMITENTE,
-  OS_RPA_NOTA_07.ESTAB,
-  OS_RPA_NOTA_07.CFOP,
-  OS_RPA_NOTA_07.PLACA,
-  OS_RPA_NOTA_07.NCM,
-  OS_RPA_NOTA_07.ITEM,
-  OS_RPA_NOTA_07.QUANTIDADE,
-  OS_RPA_NOTA_07.UNIDADETRIBUTAVEL,
-  OS_RPA_NOTA_07.VALORTOTAL,
-  OS_RPA_NOTA_07.ORDEMCARGA,
-  OS_RPA_NOTA_07.LOCALESTOQUE,
-  OS_RPA_NOTA_07.CONTRATO,
-  OS_RPA_NOTA_07.PRODUTOR,
-  OS_RPA_NOTA_07.STATUS,
-  OS_RPA_NOTA_07.MENSAGEMERRO,
-  OS_RPA_NOTA_07.DTPROCESSAMENTO,
-  OS_RPA_NOTA_07.REPROCESSADO,
-  OS_RPA_NOTA_07.SEQENDERECO,
-  OS_RPA_NOTA_07.DIFVIASOFT,
-  OS_RPA_NOTA_07.DIFAPP,
-  OS_RPA_NOTA_07.ESTABCONTRATO,
-  OS_RPA_NOTA_07.VALIDANCM,
-  OS_RPA_NOTA_07.NOTACONF,
-  OS_RPA_NOTA_07.TIPOBAIXA,
-  OS_RPA_NOTA_07.CONTCONF,
-  OS_RPA_NOTA_07.STATUS_NOTA,
-  OS_RPA_NOTA_07.NOTAFILHA,
-  OS_RPA_NOTA_07.CLASSIF_LOCAL,
-  OS_RPA_NOTA_07.NUMEROCM,
-  OS_RPA_NOTA_07.DTEMISSAO,
-  DATA_EMISSAO
-FROM OS_RPA_NOTA_07
-INNER JOIN CONCEITOPESSOA
-    ON CONCEITOPESSOA.NUMEROCM = OS_RPA_NOTA_07.NUMEROCM
-WHERE -- OS_RPA_NOTA_07.STATUS = 100 AND 
-  
-  CONCEITOPESSOA.CONCEITO <> 98
+  N.U_FISCAL_IO_CONT_ID,
+  N.CHAVEACESSO,
+  N.DTEMISS,
+  N.NUMERONOTA,
+  N.SERIE,
+  N.CNPJF,
+  N.IEEMITENTE,
+  N.ESTAB,
+  N.CFOP,
+  N.PLACA,
+  N.NCM,
+  N.ITEM,
+  N.QUANTIDADE,
+  N.UNIDADETRIBUTAVEL,
+  N.VALORTOTAL,
+  N.ORDEMCARGA,
+  N.LOCALESTOQUE,
+  N.CONTRATO,
+  N.PRODUTOR,
+  N.STATUS,
+  N.MENSAGEMERRO,
+  N.DTPROCESSAMENTO,
+  N.REPROCESSADO,
+  N.SEQENDERECO,
+  N.DIFVIASOFT,
+  N.DIFAPP,
+  N.ESTABCONTRATO,
+  N.VALIDANCM,
+  N.NOTACONF,
+  N.TIPOBAIXA,
+  N.CONTCONF,
+  N.STATUS_NOTA,
+  N.NOTAFILHA,
+  N.CLASSIF_LOCAL,
+  N.NUMEROCM,
+  N.DTEMISSAO,
+  N.DATA_EMISSAO
+FROM OS_RPA_NOTA_07 N
+INNER JOIN CONCEITOPESSOA C
+    ON C.NUMEROCM = N.NUMEROCM
+WHERE
+  -- N.STATUS = 100
+  C.CONCEITO <> 98
   AND (
         (
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 23
-             AND NOTACONF IN ('255','275','284','314',  '244', '270', '285') -- para teste, considerar apenas notas com essas configurações
-            and ieemitente is not null
-          -- AND chaveacesso = '42260685789782009441550050000278841785838097'
+            AND N.NOTACONF IN ('255', '275', '284', '314', '244', '270', '285')
+            AND N.IEEMITENTE IS NOT NULL
         )
         OR
         (
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) >= 23
-            and notaconf in ('225','232','255','275','284','314',  '244', '270', '285')
+            AND N.NOTACONF IN ('225', '232', '255', '275', '284', '314', '244', '270', '285')
         )
       )
 ORDER BY
-  DTVENCTO_CTR,
-  DATA_EMISSAO,
-  OS_RPA_NOTA_07.NOTACONF ASC """
+  N.DTVENCTO_CTR,
+  N.DATA_EMISSAO,
+  N.NOTACONF ASC
+FETCH FIRST 10 ROWS ONLY """
 
     with connection.cursor() as cursor:
         cursor.execute(sql)
         columns = [column[0] for column in cursor.description]
 
         return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-
-
-def buscar_nota_by_id(
-    connection: oracledb.Connection, cont_id: Any
-) -> dict[str, Any] | None:
-    """Fetch a single OS07 record by U_FISCAL_IO_CONT_ID.
-
-    Used when a note was inserted into the shared queue by another machine and
-    is not present in the local in-memory notas_by_id lookup.
-    """
-    sql = """
-        SELECT
-          OS_RPA_NOTA_07.U_FISCAL_IO_CONT_ID,
-          OS_RPA_NOTA_07.CHAVEACESSO,
-          OS_RPA_NOTA_07.DTEMISS,
-          OS_RPA_NOTA_07.NUMERONOTA,
-          OS_RPA_NOTA_07.SERIE,
-          OS_RPA_NOTA_07.CNPJF,
-          OS_RPA_NOTA_07.IEEMITENTE,
-          OS_RPA_NOTA_07.ESTAB,
-          OS_RPA_NOTA_07.CFOP,
-          OS_RPA_NOTA_07.PLACA,
-          OS_RPA_NOTA_07.NCM,
-          OS_RPA_NOTA_07.ITEM,
-          OS_RPA_NOTA_07.QUANTIDADE,
-          OS_RPA_NOTA_07.UNIDADETRIBUTAVEL,
-          OS_RPA_NOTA_07.VALORTOTAL,
-          OS_RPA_NOTA_07.ORDEMCARGA,
-          OS_RPA_NOTA_07.LOCALESTOQUE,
-          OS_RPA_NOTA_07.CONTRATO,
-          OS_RPA_NOTA_07.PRODUTOR,
-          OS_RPA_NOTA_07.STATUS,
-          OS_RPA_NOTA_07.MENSAGEMERRO,
-          OS_RPA_NOTA_07.DTPROCESSAMENTO,
-          OS_RPA_NOTA_07.REPROCESSADO,
-          OS_RPA_NOTA_07.SEQENDERECO,
-          OS_RPA_NOTA_07.DIFVIASOFT,
-          OS_RPA_NOTA_07.DIFAPP,
-          OS_RPA_NOTA_07.ESTABCONTRATO,
-          OS_RPA_NOTA_07.VALIDANCM,
-          OS_RPA_NOTA_07.NOTACONF,
-          OS_RPA_NOTA_07.TIPOBAIXA,
-          OS_RPA_NOTA_07.CONTCONF,
-          OS_RPA_NOTA_07.STATUS_NOTA,
-          OS_RPA_NOTA_07.NOTAFILHA,
-          OS_RPA_NOTA_07.CLASSIF_LOCAL,
-          OS_RPA_NOTA_07.NUMEROCM,
-          OS_RPA_NOTA_07.DTEMISSAO,
-          DATA_EMISSAO
-        FROM OS_RPA_NOTA_07
-        INNER JOIN CONCEITOPESSOA
-            ON CONCEITOPESSOA.NUMEROCM = OS_RPA_NOTA_07.NUMEROCM
-        WHERE OS_RPA_NOTA_07.U_FISCAL_IO_CONT_ID = :cont_id
-    """
-    with connection.cursor() as cursor:
-        cursor.execute(sql, {"cont_id": cont_id})
-        row = cursor.fetchone()
-        if not row or cursor.description is None:
-            return None
-        columns = [cast(str, col[0]) for col in cursor.description]
-        return dict(zip(columns, row, strict=False))
 
 
 def buscar_estab_logado(connection: oracledb.Connection) -> int:

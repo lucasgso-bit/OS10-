@@ -1,16 +1,13 @@
 """Shared OS07 nota processing queue — multi-machine, claim-based.
 
-Oracle DDL — execute once before first multi-machine run:
-─────────────────────────────────────────────────────────────────
-ALTER TABLE U_OS07_FILA ADD COMPUTADOR VARCHAR2(100);
-CREATE INDEX IDX_OS07_FILA_CLAIM
-    ON U_OS07_FILA (STATUS, COMPUTADOR, DT_INCLUSAO);
-─────────────────────────────────────────────────────────────────
+No DDL required — uses the existing USUARIO column as a claiming marker:
+  USUARIO = 'OS07_FILA'  → note is in the shared pool, available to any machine
+  USUARIO = '<computador>' → note is claimed and being processed by that machine
 
 Flow per machine (all machines share the same queue):
-  1. limpar_fila()     — reset EXECUTANDO rows stuck from a previous crash of THIS machine
-  2. popular_fila()    — insert notes NOT already queued today (WHERE NOT EXISTS, safe for concurrent calls)
-  3. claim_next_nota() — atomically claim one PENDENTE note (FOR UPDATE SKIP LOCKED)
+  1. limpar_fila()      — reset EXECUTANDO rows stuck from a previous crash of THIS machine
+  2. popular_fila()     — insert notes NOT already queued today (WHERE NOT EXISTS, safe for concurrent calls)
+  3. claim_next_batch() — atomically claim 10 PENDENTE notes (FOR UPDATE SKIP LOCKED)
   4. marcar_concluido/erro() — mark the claimed note done or failed
   5. enviar_relatorio_final() — email summary for THIS machine's work today
 """
@@ -44,36 +41,34 @@ _EMAIL_TO = [
 
 
 def limpar_fila(conn: oracledb.Connection, computador: str) -> None:
-    """Reset EXECUTANDO notes left by a previous crashed run of this machine.
+    """Remove notas presas de um crash anterior desta máquina.
 
-    Frees stuck notes so any machine (including this one on restart) can
-    claim and process them. Only touches rows belonging to this machine today.
+    Deleta as linhas PENDENTE desta máquina que ficaram sem processar,
+    liberando-as para serem re-consultadas por qualquer máquina.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
-            UPDATE U_OS07_FILA
-               SET STATUS     = 'PENDENTE',
-                   COMPUTADOR = NULL
-             WHERE COMPUTADOR = :comp
-               AND STATUS     = 'EXECUTANDO'
+            DELETE FROM U_OS07_FILA
+             WHERE USUARIO = :comp
+               AND STATUS  = 'PENDENTE'
                AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
             """,
             {"comp": computador},
         )
         if cur.rowcount:
-            print(f"[fila] {cur.rowcount} nota(s) em EXECUTANDO resetadas para PENDENTE.")
+            print(f"[fila] {cur.rowcount} nota(s) pendentes anteriores removidas para re-processamento.")
         conn.commit()
 
 
 def popular_fila(
     conn: oracledb.Connection, notas: list[dict[str, Any]], computador: str
 ) -> None:
-    """Insert notes not already present in today's shared queue.
+    """Insere as notas desta máquina na fila compartilhada.
 
-    Safe for concurrent calls: WHERE NOT EXISTS guarantees each CONT_ID is
-    inserted exactly once per day regardless of which machine arrives first.
-    USUARIO is set to the inserting machine for traceability.
+    USUARIO = nome da máquina (COMPUTADOR_ROBO) — identifica quem está
+    processando cada nota. WHERE NOT EXISTS garante que notas já salvas
+    por outra máquina hoje não sejam duplicadas.
     """
     agora = datetime.now()
     inseridos = 0
@@ -112,61 +107,9 @@ def popular_fila(
 
     previsao_final = agora + timedelta(minutes=len(notas) * _MINUTOS_POR_NOTA)
     print(
-        f"[fila] {inseridos} nota(s) adicionadas à fila compartilhada. "
-        f"Previsão de término (base): {previsao_final.strftime('%H:%M')}."
+        f"[fila] {inseridos} nota(s) salvas para '{computador}'. "
+        f"Previsão de término: {previsao_final.strftime('%H:%M')}."
     )
-
-
-_BATCH_SIZE = 10  # notas por lote por máquina
-
-
-def claim_next_batch(
-    conn: oracledb.Connection, computador: str
-) -> list[dict[str, Any]]:
-    """Atomically claim the next batch of PENDENTE notes from the shared queue.
-
-    Claims up to _BATCH_SIZE notes at once via FOR UPDATE SKIP LOCKED.
-    Two machines running simultaneously always receive different notes.
-    Returns an empty list when the queue is exhausted.
-    """
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            SELECT U_OS07_FILA_ID, CONT_ID, NUMERONOTA, NOTACONF, ESTAB
-              FROM U_OS07_FILA
-             WHERE STATUS     = 'PENDENTE'
-               AND COMPUTADOR IS NULL
-               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
-             ORDER BY POSICAO
-             FETCH FIRST {_BATCH_SIZE} ROWS ONLY
-               FOR UPDATE SKIP LOCKED
-            """
-        )
-        rows = cur.fetchall()
-        if not rows:
-            return []
-
-        cur.executemany(
-            """
-            UPDATE U_OS07_FILA
-               SET STATUS     = 'EXECUTANDO',
-                   COMPUTADOR = :comp
-             WHERE U_OS07_FILA_ID = :id
-            """,
-            [{"comp": computador, "id": row[0]} for row in rows],
-        )
-        conn.commit()
-
-    return [
-        {
-            "U_OS07_FILA_ID": int(row[0]),
-            "CONT_ID": row[1],
-            "NUMERONOTA": row[2],
-            "NOTACONF": row[3],
-            "ESTAB": row[4],
-        }
-        for row in rows
-    ]
 
 
 def marcar_concluido(
@@ -178,8 +121,8 @@ def marcar_concluido(
             UPDATE U_OS07_FILA
                SET STATUS           = 'CONCLUIDO',
                    DT_PROCESSAMENTO = SYSTIMESTAMP
-             WHERE CONT_ID          = :cont_id
-               AND COMPUTADOR       = :comp
+             WHERE CONT_ID  = :cont_id
+               AND USUARIO  = :comp
                AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
             """,
             {"cont_id": cont_id, "comp": computador},
@@ -200,8 +143,8 @@ def marcar_erro(
                SET STATUS           = 'ERRO',
                    DT_PROCESSAMENTO = SYSTIMESTAMP,
                    MENSAGEM         = :msg
-             WHERE CONT_ID          = :cont_id
-               AND COMPUTADOR       = :comp
+             WHERE CONT_ID  = :cont_id
+               AND USUARIO  = :comp
                AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
             """,
             {"cont_id": cont_id, "comp": computador, "msg": mensagem[:4000]},
@@ -224,9 +167,9 @@ def _buscar_resumo(
                 COUNT(*) AS TOTAL,
                 SUM(CASE WHEN STATUS = 'CONCLUIDO' THEN 1 ELSE 0 END) AS CONCLUIDOS,
                 SUM(CASE WHEN STATUS = 'ERRO'      THEN 1 ELSE 0 END) AS ERROS,
-                SUM(CASE WHEN STATUS = 'PENDENTE'  THEN 1 ELSE 0 END) AS PENDENTES
+                SUM(CASE WHEN STATUS = 'EXECUTANDO' THEN 1 ELSE 0 END) AS PENDENTES
             FROM U_OS07_FILA
-            WHERE COMPUTADOR = :comp
+            WHERE USUARIO = :comp
               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
             """,
             {"comp": computador},
@@ -245,8 +188,8 @@ def _buscar_erros_detalhe(
             """
             SELECT NUMERONOTA, NOTACONF, ESTAB, POSICAO, MENSAGEM
               FROM U_OS07_FILA
-             WHERE COMPUTADOR = :comp
-               AND STATUS     = 'ERRO'
+             WHERE USUARIO  = :comp
+               AND STATUS   = 'ERRO'
                AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
              ORDER BY POSICAO
             """,
@@ -331,7 +274,7 @@ def _build_report_html(
       {_card(total,      "Total",      "#e3f2fd", "#1976d2")}
       {_card(concluidos, "Concluídos", "#e8f5e9", "#388e3c")}
       {_card(erros,      "Erros",      "#fff3e0", "#e65100")}
-      {_card(pendentes,  "Pendentes",  "#f3e5f5", "#7b1fa2")}
+      {_card(pendentes,  "Em exec.",   "#f3e5f5", "#7b1fa2")}
     </div>
     <div style="background:#fff8e1;border-left:5px solid #f7b500;
                 padding:14px 16px;border-radius:8px;margin-bottom:20px">
@@ -363,7 +306,7 @@ def enviar_relatorio_final(conn: oracledb.Connection, computador: str) -> None:
 
     print(
         f"\nRelatório OS07 | Máquina: {computador} | "
-        f"Total: {total} | Concluídos: {concluidos} | Erros: {erros} | Pendentes: {pendentes}"
+        f"Total: {total} | Concluídos: {concluidos} | Erros: {erros} | Em exec.: {pendentes}"
     )
 
     html = _build_report_html(computador, total, concluidos, erros, pendentes, erros_detalhe)

@@ -26,10 +26,9 @@ from robots.robot_OS07.src.agro_alerts import (
 )
 from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS07.src.agro_login import login_agro
-from robots.robot_OS07.src.database import buscar_nota_by_id, buscar_notas_pendentes
+from robots.robot_OS07.src.database import buscar_notas_pendentes
 from robots.robot_OS07.src.nota_router import process_note_by_config
 from robots.robot_OS07.src.queue_tracker import (
-    claim_next_batch,
     enviar_relatorio_final,
     limpar_fila,
     marcar_concluido,
@@ -66,16 +65,16 @@ def _reiniciar_agro() -> None:
 
 
 def run_once(log_id: int | None = None) -> None:
-    """Single execution cycle: claim notes from the shared queue and process them.
+    """Single execution cycle: fetch pending notes and process all of them.
+
+    buscar_notas_pendentes() already excludes notes claimed by other machines
+    today (via U_OS07_FILA), so two machines always receive different notes.
+    popular_fila() saves this machine's batch to the queue so the other machine
+    skips them on its next query.
 
     When log_id is provided (called by the platform worker), task claiming and
-    completion are handled by the worker — this function only runs the business
-    logic. When log_id is None (legacy main.py path), this function claims and
-    completes its own task.
-
-    Multiple machines can run this simultaneously: popular_fila() only inserts
-    notes not already queued today, and claim_next_nota() uses FOR UPDATE SKIP
-    LOCKED so each machine always processes a different note.
+    completion are handled by the worker. When log_id is None (legacy main.py
+    path), this function claims and completes its own task.
     """
     platform_managed = log_id is not None
 
@@ -112,19 +111,14 @@ def run_once(log_id: int | None = None) -> None:
             print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
         return
 
-    # Reset stuck notes from a previous crash of this machine, then populate
-    # the shared queue — only inserts notes not already queued today.
+    # Salva as notas desta máquina na fila — outras máquinas as ignorarão
+    # na próxima consulta (buscar_notas_pendentes exclui notas já na fila hoje)
     try:
         with get_connection() as connection:
             limpar_fila(connection, COMPUTADOR_ROBO)
             popular_fila(connection, notas, COMPUTADOR_ROBO)
     except Exception as exc:
         print(f"[queue_tracker] Erro ao popular fila (não bloqueia execução): {exc}")
-
-    # Fast lookup: CONT_ID → full nota dict (from the same query both machines ran).
-    # If a note was inserted by the other machine and isn't in our local dict,
-    # buscar_nota_by_id() fetches it directly from the source table.
-    notas_by_id = {n["U_FISCAL_IO_CONT_ID"]: n for n in notas}
 
     print("Iniciando Agro...")
     kill_agro_process("Agro3C.exe")
@@ -144,7 +138,7 @@ def run_once(log_id: int | None = None) -> None:
 
     ultimo_check = time.time()
 
-    while True:
+    for nota in notas:
         # A cada 3 minutos, consulta U_ROBOT_LOG para ver se o robô foi interrompido
         if time.time() - ultimo_check >= _INTERRUPT_CHECK_INTERVAL:
             if _esta_interrompido():
@@ -154,81 +148,49 @@ def run_once(log_id: int | None = None) -> None:
                 return
             ultimo_check = time.time()
 
-        # Claim lote de 10 notas atomicamente — as duas máquinas nunca recebem a mesma nota
-        with get_connection() as connection:
-            lote = claim_next_batch(connection, COMPUTADOR_ROBO)
+        id_nota = nota.get("U_FISCAL_IO_CONT_ID")
+        try:
+            estab_nota = int(nota["ESTAB"])
 
-        if not lote:
-            print("Fila vazia — todas as notas foram processadas ou estão sendo processadas.")
-            break
+            print(f"\n-> Processando nota ID: {id_nota} | Estab: {estab_nota}")
 
-        print(f"Lote de {len(lote)} nota(s) obtido.")
-
-        for claimed in lote:
-            # A cada 3 minutos, verifica interrupção também dentro do lote
-            if time.time() - ultimo_check >= _INTERRUPT_CHECK_INTERVAL:
-                if _esta_interrompido():
-                    print(
-                        f"Robô interrompido externamente (log_id={log_id}). Parando processamento."
-                    )
-                    return
-                ultimo_check = time.time()
-
-            cont_id = claimed["CONT_ID"]
-            nota = notas_by_id.get(cont_id)
-
-            if nota is None:
-                # Nota foi inserida pela outra máquina — busca direto no banco
+            switched = switch_establishment(estab_nota)
+            if not switched:
+                msg_err = f"Tela de seleção de estabelecimento não apareceu (nota {id_nota}). Agro reiniciado."
+                print(msg_err)
                 with get_connection() as connection:
-                    nota = buscar_nota_by_id(connection, cont_id)
-                if nota is None:
-                    print(f"Nota CONT_ID={cont_id} não encontrada. Marcando erro.")
-                    with get_connection() as connection:
-                        marcar_erro(connection, cont_id, COMPUTADOR_ROBO, "Nota não encontrada no banco")
-                    continue
+                    marcar_erro(connection, id_nota, COMPUTADOR_ROBO, msg_err)
+                _reiniciar_agro()
+                continue
 
-            id_nota = nota.get("U_FISCAL_IO_CONT_ID")
-            try:
-                estab_nota = int(nota["ESTAB"])
-                print(f"\n-> Processando nota ID: {id_nota} | Estab: {estab_nota}")
+            print("Troca de estabelecimento realizada.")
 
-                switched = switch_establishment(estab_nota)
-                if not switched:
-                    msg_err = f"Tela de seleção de estabelecimento não apareceu (nota {id_nota}). Agro reiniciado."
-                    print(msg_err)
-                    with get_connection() as connection:
-                        marcar_erro(connection, id_nota, COMPUTADOR_ROBO, msg_err)
-                    _reiniciar_agro()
-                    continue
+            processed = process_note_by_config(nota)
 
-                print("Troca de estabelecimento realizada.")
-
-                processed = process_note_by_config(nota)
-
-                if processed:
-                    print("Nota processada com sucesso")
-                    try:
-                        with get_connection() as connection:
-                            marcar_concluido(connection, id_nota, COMPUTADOR_ROBO)
-                    except Exception as exc:
-                        print(f"[queue_tracker] marcar_concluido falhou: {exc}")
-                else:
-                    print("Falha ao processar nota")
-                    try:
-                        with get_connection() as connection:
-                            marcar_erro(
-                                connection, id_nota, COMPUTADOR_ROBO, "Falha no processamento (sem exceção)"
-                            )
-                    except Exception as exc:
-                        print(f"[queue_tracker] marcar_erro falhou: {exc}")
-
-            except Exception as e:
-                print(f"Erro na nota {id_nota}: {e}")
+            if processed:
+                print("Nota processada com sucesso")
                 try:
                     with get_connection() as connection:
-                        marcar_erro(connection, id_nota, COMPUTADOR_ROBO, str(e))
+                        marcar_concluido(connection, id_nota, COMPUTADOR_ROBO)
+                except Exception as exc:
+                    print(f"[queue_tracker] marcar_concluido falhou: {exc}")
+            else:
+                print("Falha ao processar nota")
+                try:
+                    with get_connection() as connection:
+                        marcar_erro(
+                            connection, id_nota, COMPUTADOR_ROBO, "Falha no processamento (sem exceção)"
+                        )
                 except Exception as exc:
                     print(f"[queue_tracker] marcar_erro falhou: {exc}")
+
+        except Exception as e:
+            print(f"Erro na nota {id_nota}: {e}")
+            try:
+                with get_connection() as connection:
+                    marcar_erro(connection, id_nota, COMPUTADOR_ROBO, str(e))
+            except Exception as exc:
+                print(f"[queue_tracker] marcar_erro falhou: {exc}")
 
     # Envia relatório final com totais desta máquina hoje
     try:
