@@ -80,6 +80,11 @@ WHERE
             AND N.NOTACONF IN ('225', '232', '255', '275', '284', '314', '244', '270', '285')
         )
       )
+  AND NOT EXISTS (
+        SELECT 1 FROM U_OS07_FILA F
+         WHERE F.CONT_ID = N.U_FISCAL_IO_CONT_ID
+           AND TRUNC(F.DT_INCLUSAO) = TRUNC(SYSDATE)
+      )
 ORDER BY
   N.DTVENCTO_CTR,
   N.DATA_EMISSAO,
