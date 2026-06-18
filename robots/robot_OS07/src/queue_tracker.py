@@ -1,28 +1,22 @@
-"""Per-user OS07 nota processing queue — insert, update, and final report.
+"""Shared OS07 nota processing queue — multi-machine, claim-based.
 
-Oracle DDL (execute uma vez no banco):
+Oracle DDL — execute once before first multi-machine run:
 ─────────────────────────────────────────────────────────────────
-CREATE TABLE U_OS07_FILA (
-    U_OS07_FILA_ID    NUMBER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    USUARIO           VARCHAR2(100)  NOT NULL,
-    CONT_ID           NUMBER,
-    NUMERONOTA        VARCHAR2(50),
-    NOTACONF          VARCHAR2(10),
-    ESTAB             VARCHAR2(10),
-    POSICAO           NUMBER         NOT NULL,
-    STATUS            VARCHAR2(20)   DEFAULT 'PENDENTE' NOT NULL,
-    DT_INCLUSAO       TIMESTAMP      DEFAULT SYSTIMESTAMP NOT NULL,
-    DT_PREVISAO       TIMESTAMP,
-    DT_PROCESSAMENTO  TIMESTAMP,
-    MENSAGEM          VARCHAR2(4000)
-);
+ALTER TABLE U_OS07_FILA ADD COMPUTADOR VARCHAR2(100);
+CREATE INDEX IDX_OS07_FILA_CLAIM
+    ON U_OS07_FILA (STATUS, COMPUTADOR, DT_INCLUSAO);
 ─────────────────────────────────────────────────────────────────
+
+Flow per machine (all machines share the same queue):
+  1. limpar_fila()     — reset EXECUTANDO rows stuck from a previous crash of THIS machine
+  2. popular_fila()    — insert notes NOT already queued today (WHERE NOT EXISTS, safe for concurrent calls)
+  3. claim_next_nota() — atomically claim one PENDENTE note (FOR UPDATE SKIP LOCKED)
+  4. marcar_concluido/erro() — mark the claimed note done or failed
+  5. enviar_relatorio_final() — email summary for THIS machine's work today
 """
 
 from __future__ import annotations
 
-import getpass
-import os
 import smtplib
 from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
@@ -44,34 +38,45 @@ _EMAIL_TO = [
 ]
 
 
-def get_usuario() -> str:
-    return os.environ.get("USERNAME") or os.environ.get("USER") or getpass.getuser()
-
-
 # ---------------------------------------------------------------------------
 # Queue management
 # ---------------------------------------------------------------------------
 
 
-def limpar_fila(conn: oracledb.Connection) -> int:
-    """Delete all rows for the current Windows user. Returns rows deleted."""
-    usuario = get_usuario()
+def limpar_fila(conn: oracledb.Connection, computador: str) -> None:
+    """Reset EXECUTANDO notes left by a previous crashed run of this machine.
+
+    Frees stuck notes so any machine (including this one on restart) can
+    claim and process them. Only touches rows belonging to this machine today.
+    """
     with conn.cursor() as cur:
         cur.execute(
-            "DELETE FROM U_OS07_FILA WHERE USUARIO = :usuario",
-            {"usuario": usuario},
+            """
+            UPDATE U_OS07_FILA
+               SET STATUS     = 'PENDENTE',
+                   COMPUTADOR = NULL
+             WHERE COMPUTADOR = :comp
+               AND STATUS     = 'EXECUTANDO'
+               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+            """,
+            {"comp": computador},
         )
-        deleted = cur.rowcount
+        if cur.rowcount:
+            print(f"[fila] {cur.rowcount} nota(s) em EXECUTANDO resetadas para PENDENTE.")
         conn.commit()
-    if deleted:
-        print(f"Fila anterior removida: {deleted} registros do usuário '{usuario}'.")
-    return deleted
 
 
-def popular_fila(conn: oracledb.Connection, notas: list[dict[str, Any]]) -> None:
-    """Insert all notas as PENDENTE with per-position estimated completion times."""
-    usuario = get_usuario()
+def popular_fila(
+    conn: oracledb.Connection, notas: list[dict[str, Any]], computador: str
+) -> None:
+    """Insert notes not already present in today's shared queue.
+
+    Safe for concurrent calls: WHERE NOT EXISTS guarantees each CONT_ID is
+    inserted exactly once per day regardless of which machine arrives first.
+    USUARIO is set to the inserting machine for traceability.
+    """
     agora = datetime.now()
+    inseridos = 0
 
     with conn.cursor() as cur:
         for posicao, nota in enumerate(notas, start=1):
@@ -81,47 +86,108 @@ def popular_fila(conn: oracledb.Connection, notas: list[dict[str, Any]]) -> None
                 INSERT INTO U_OS07_FILA
                     (USUARIO, CONT_ID, NUMERONOTA, NOTACONF, ESTAB,
                      POSICAO, STATUS, DT_INCLUSAO, DT_PREVISAO)
-                VALUES
-                    (:usuario, :cont_id, :numeronota, :notaconf, :estab,
-                     :posicao, 'PENDENTE', SYSTIMESTAMP, :previsao)
+                SELECT
+                    :usuario, :cont_id, :numeronota, :notaconf, :estab,
+                    :posicao, 'PENDENTE', SYSTIMESTAMP, :previsao
+                FROM DUAL
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM U_OS07_FILA
+                     WHERE CONT_ID = :cont_id2
+                       AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+                )
                 """,
                 {
-                    "usuario": usuario,
+                    "usuario": computador,
                     "cont_id": nota.get("U_FISCAL_IO_CONT_ID"),
                     "numeronota": str(nota.get("NUMERONOTA") or ""),
                     "notaconf": str(nota.get("NOTACONF") or ""),
                     "estab": str(nota.get("ESTAB") or ""),
                     "posicao": posicao,
                     "previsao": previsao,
+                    "cont_id2": nota.get("U_FISCAL_IO_CONT_ID"),
                 },
             )
+            inseridos += cur.rowcount
         conn.commit()
 
     previsao_final = agora + timedelta(minutes=len(notas) * _MINUTOS_POR_NOTA)
     print(
-        f"Fila criada: {len(notas)} notas para '{usuario}'. "
-        f"Previsão de término: {previsao_final.strftime('%H:%M')}."
+        f"[fila] {inseridos} nota(s) adicionadas à fila compartilhada. "
+        f"Previsão de término (base): {previsao_final.strftime('%H:%M')}."
     )
 
 
-def marcar_concluido(conn: oracledb.Connection, cont_id: Any) -> None:
-    usuario = get_usuario()
+def claim_next_nota(
+    conn: oracledb.Connection, computador: str
+) -> dict[str, Any] | None:
+    """Atomically claim the next unclaimed PENDENTE note from the shared queue.
+
+    Uses FOR UPDATE SKIP LOCKED so two machines running simultaneously never
+    receive the same note. Returns None when all notes are claimed or processed.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT U_OS07_FILA_ID, CONT_ID, NUMERONOTA, NOTACONF, ESTAB
+              FROM U_OS07_FILA
+             WHERE STATUS     = 'PENDENTE'
+               AND COMPUTADOR IS NULL
+               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+             ORDER BY POSICAO
+             FETCH FIRST 1 ROW ONLY
+               FOR UPDATE SKIP LOCKED
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        fila_id, cont_id, numeronota, notaconf, estab = row
+
+        cur.execute(
+            """
+            UPDATE U_OS07_FILA
+               SET STATUS     = 'EXECUTANDO',
+                   COMPUTADOR = :comp
+             WHERE U_OS07_FILA_ID = :id
+            """,
+            {"comp": computador, "id": fila_id},
+        )
+        conn.commit()
+
+    return {
+        "U_OS07_FILA_ID": int(fila_id),
+        "CONT_ID": cont_id,
+        "NUMERONOTA": numeronota,
+        "NOTACONF": notaconf,
+        "ESTAB": estab,
+    }
+
+
+def marcar_concluido(
+    conn: oracledb.Connection, cont_id: Any, computador: str
+) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
             UPDATE U_OS07_FILA
                SET STATUS           = 'CONCLUIDO',
                    DT_PROCESSAMENTO = SYSTIMESTAMP
-             WHERE CONT_ID = :cont_id
-               AND USUARIO = :usuario
+             WHERE CONT_ID          = :cont_id
+               AND COMPUTADOR       = :comp
+               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
             """,
-            {"cont_id": cont_id, "usuario": usuario},
+            {"cont_id": cont_id, "comp": computador},
         )
         conn.commit()
 
 
-def marcar_erro(conn: oracledb.Connection, cont_id: Any, mensagem: str = "") -> None:
-    usuario = get_usuario()
+def marcar_erro(
+    conn: oracledb.Connection,
+    cont_id: Any,
+    computador: str,
+    mensagem: str = "",
+) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -129,21 +195,23 @@ def marcar_erro(conn: oracledb.Connection, cont_id: Any, mensagem: str = "") -> 
                SET STATUS           = 'ERRO',
                    DT_PROCESSAMENTO = SYSTIMESTAMP,
                    MENSAGEM         = :msg
-             WHERE CONT_ID = :cont_id
-               AND USUARIO = :usuario
+             WHERE CONT_ID          = :cont_id
+               AND COMPUTADOR       = :comp
+               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
             """,
-            {"cont_id": cont_id, "usuario": usuario, "msg": mensagem[:4000]},
+            {"cont_id": cont_id, "comp": computador, "msg": mensagem[:4000]},
         )
         conn.commit()
 
 
 # ---------------------------------------------------------------------------
-# Final report
+# Final report — scoped to this machine's work today
 # ---------------------------------------------------------------------------
 
 
-def _buscar_resumo(conn: oracledb.Connection) -> dict[str, int]:
-    usuario = get_usuario()
+def _buscar_resumo(
+    conn: oracledb.Connection, computador: str
+) -> dict[str, int]:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -153,9 +221,10 @@ def _buscar_resumo(conn: oracledb.Connection) -> dict[str, int]:
                 SUM(CASE WHEN STATUS = 'ERRO'      THEN 1 ELSE 0 END) AS ERROS,
                 SUM(CASE WHEN STATUS = 'PENDENTE'  THEN 1 ELSE 0 END) AS PENDENTES
             FROM U_OS07_FILA
-            WHERE USUARIO = :usuario
+            WHERE COMPUTADOR = :comp
+              AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
             """,
-            {"usuario": usuario},
+            {"comp": computador},
         )
         row = cur.fetchone()
         cols = [c[0].lower() for c in cur.description]
@@ -163,18 +232,20 @@ def _buscar_resumo(conn: oracledb.Connection) -> dict[str, int]:
     return {k: int(v or 0) for k, v in result.items()}
 
 
-def _buscar_erros_detalhe(conn: oracledb.Connection) -> list[dict[str, str]]:
-    usuario = get_usuario()
+def _buscar_erros_detalhe(
+    conn: oracledb.Connection, computador: str
+) -> list[dict[str, str]]:
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT NUMERONOTA, NOTACONF, ESTAB, POSICAO, MENSAGEM
               FROM U_OS07_FILA
-             WHERE USUARIO = :usuario
-               AND STATUS  = 'ERRO'
+             WHERE COMPUTADOR = :comp
+               AND STATUS     = 'ERRO'
+               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
              ORDER BY POSICAO
             """,
-            {"usuario": usuario},
+            {"comp": computador},
         )
         return [
             {
@@ -188,8 +259,20 @@ def _buscar_erros_detalhe(conn: oracledb.Connection) -> list[dict[str, str]]:
         ]
 
 
+_TH = "background:#fafafa;padding:9px 10px;text-align:left;border:1px solid #ddd;font-size:13px"
+
+
+def _card(valor: int, label: str, bg: str, border: str) -> str:
+    return (
+        f'<div style="flex:1;min-width:120px;border-radius:8px;padding:14px 12px;'
+        f'text-align:center;background:{bg};border-left:5px solid {border}">'
+        f'<p style="font-size:30px;font-weight:bold;margin:0">{valor}</p>'
+        f'<p style="font-size:12px;color:#555;margin:4px 0 0">{label}</p></div>'
+    )
+
+
 def _build_report_html(
-    usuario: str,
+    computador: str,
     total: int,
     concluidos: int,
     erros: int,
@@ -235,7 +318,7 @@ def _build_report_html(
   <div style="padding:30px 26px">
     <h1 style="font-size:22px;margin:0 0 6px">Relatório Final de Execução - OS07</h1>
     <p style="margin:0 0 20px;color:#666">
-      Usuário: <strong>{usuario}</strong>
+      Máquina: <strong>{computador}</strong>
       &nbsp;|&nbsp;
       Data: <strong>{datetime.now().strftime('%d/%m/%Y %H:%M')}</strong>
     </p>
@@ -258,25 +341,11 @@ def _build_report_html(
 </body></html>"""
 
 
-_TH = "background:#fafafa;padding:9px 10px;text-align:left;border:1px solid #ddd;font-size:13px"
-
-
-def _card(valor: int, label: str, bg: str, border: str) -> str:
-    return (
-        f'<div style="flex:1;min-width:120px;border-radius:8px;padding:14px 12px;'
-        f'text-align:center;background:{bg};border-left:5px solid {border}">'
-        f'<p style="font-size:30px;font-weight:bold;margin:0">{valor}</p>'
-        f'<p style="font-size:12px;color:#555;margin:4px 0 0">{label}</p></div>'
-    )
-
-
-def enviar_relatorio_final(conn: oracledb.Connection) -> None:
-    """Query queue stats for current user and send a summary email."""
-    usuario = get_usuario()
-
+def enviar_relatorio_final(conn: oracledb.Connection, computador: str) -> None:
+    """Query queue stats for this machine today and send a summary email."""
     try:
-        resumo = _buscar_resumo(conn)
-        erros_detalhe = _buscar_erros_detalhe(conn)
+        resumo = _buscar_resumo(conn, computador)
+        erros_detalhe = _buscar_erros_detalhe(conn, computador)
     except Exception as exc:
         print(f"[queue_tracker] Erro ao buscar dados para relatório: {exc}")
         resumo = {"total": 0, "concluidos": 0, "erros": 0, "pendentes": 0}
@@ -288,15 +357,15 @@ def enviar_relatorio_final(conn: oracledb.Connection) -> None:
     pendentes = resumo["pendentes"]
 
     print(
-        f"\nRelatório OS07 | Usuário: {usuario} | "
+        f"\nRelatório OS07 | Máquina: {computador} | "
         f"Total: {total} | Concluídos: {concluidos} | Erros: {erros} | Pendentes: {pendentes}"
     )
 
-    html = _build_report_html(usuario, total, concluidos, erros, pendentes, erros_detalhe)
+    html = _build_report_html(computador, total, concluidos, erros, pendentes, erros_detalhe)
 
     msg = MIMEMultipart()
     msg["Subject"] = (
-        f"VX360 OS07 - Relatório Final | {usuario} | "
+        f"VX360 OS07 - Relatório Final | {computador} | "
         f"Tentativas: {total} | Sucesso: {concluidos} | Erro: {erros}"
     )
     msg["From"] = EMAIL_FROM

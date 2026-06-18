@@ -2,7 +2,7 @@
 
 Focus the login window and fill credentials before confirming access.
 
-Developed by: Giovane Rodrigues
+Developed by: Matheus Correa
 """
 
 from __future__ import annotations
