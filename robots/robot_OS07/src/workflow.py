@@ -31,6 +31,7 @@ from robots.robot_OS07.src.nota_router import process_note_by_config
 from robots.robot_OS07.src.queue_tracker import (
     enviar_relatorio_final,
     limpar_fila,
+    limpar_fila_pos_execucao,
     marcar_concluido,
     marcar_erro,
     popular_fila,
@@ -198,6 +199,13 @@ def run_once(log_id: int | None = None) -> None:
             enviar_relatorio_final(connection, COMPUTADOR_ROBO)
     except Exception as exc:
         print(f"[queue_tracker] Erro ao enviar relatório final: {exc}")
+
+    # Remove todas as linhas da fila após o relatório ser enviado
+    try:
+        with get_connection() as connection:
+            limpar_fila_pos_execucao(connection, COMPUTADOR_ROBO)
+    except Exception as exc:
+        print(f"[queue_tracker] Erro ao limpar fila pós-execução: {exc}")
 
     if not platform_managed:
         with get_connection() as connection:

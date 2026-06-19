@@ -41,24 +41,58 @@ _EMAIL_TO = [
 
 
 def limpar_fila(conn: oracledb.Connection, computador: str) -> None:
-    """Remove notas presas de um crash anterior desta máquina.
+    """Remove linhas antigas e notas presas de crash desta máquina.
 
-    Deleta as linhas PENDENTE desta máquina que ficaram sem processar,
-    liberando-as para serem re-consultadas por qualquer máquina.
+    1. Apaga todos os registros de dias anteriores (histórico acumulado).
+    2. Apaga PENDENTE do dia atual — notas que ficaram presas num crash anterior,
+       liberando-as para serem re-consultadas por qualquer máquina.
     """
     with conn.cursor() as cur:
         cur.execute(
             """
             DELETE FROM U_OS07_FILA
-             WHERE USUARIO = :comp
-               AND STATUS  = 'PENDENTE'
-               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+             WHERE USUARIO     = :comp
+               AND DT_INCLUSAO < TRUNC(SYSDATE)
+            """,
+            {"comp": computador},
+        )
+        if cur.rowcount:
+            print(f"[fila] {cur.rowcount} registro(s) de dias anteriores removidos.")
+
+        cur.execute(
+            """
+            DELETE FROM U_OS07_FILA
+             WHERE USUARIO     = :comp
+               AND STATUS      = 'PENDENTE'
+               AND DT_INCLUSAO >= TRUNC(SYSDATE)
             """,
             {"comp": computador},
         )
         if cur.rowcount:
             print(f"[fila] {cur.rowcount} nota(s) pendentes anteriores removidas para re-processamento.")
-        conn.commit()
+
+    conn.commit()
+
+
+def limpar_fila_pos_execucao(conn: oracledb.Connection, computador: str) -> None:
+    """Apaga todas as linhas desta máquina da fila após o ciclo completo.
+
+    Chamada depois que o relatório final já foi enviado, então os dados
+    já foram consumidos. Remove CONCLUIDO, ERRO e eventuais PENDENTE
+    remanescentes do dia.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM U_OS07_FILA
+             WHERE USUARIO     = :comp
+               AND DT_INCLUSAO >= TRUNC(SYSDATE)
+            """,
+            {"comp": computador},
+        )
+        if cur.rowcount:
+            print(f"[fila] {cur.rowcount} linha(s) removidas da fila após finalização.")
+    conn.commit()
 
 
 def popular_fila(
@@ -88,7 +122,7 @@ def popular_fila(
                 WHERE NOT EXISTS (
                     SELECT 1 FROM U_OS07_FILA
                      WHERE CONT_ID = :cont_id2
-                       AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+                       AND DT_INCLUSAO >= TRUNC(SYSDATE)
                 )
                 """,
                 {
@@ -123,7 +157,7 @@ def marcar_concluido(
                    DT_PROCESSAMENTO = SYSTIMESTAMP
              WHERE CONT_ID  = :cont_id
                AND USUARIO  = :comp
-               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+               AND DT_INCLUSAO >= TRUNC(SYSDATE)
             """,
             {"cont_id": cont_id, "comp": computador},
         )
@@ -145,7 +179,7 @@ def marcar_erro(
                    MENSAGEM         = :msg
              WHERE CONT_ID  = :cont_id
                AND USUARIO  = :comp
-               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+               AND DT_INCLUSAO >= TRUNC(SYSDATE)
             """,
             {"cont_id": cont_id, "comp": computador, "msg": mensagem[:4000]},
         )
@@ -170,7 +204,7 @@ def _buscar_resumo(
                 SUM(CASE WHEN STATUS = 'EXECUTANDO' THEN 1 ELSE 0 END) AS PENDENTES
             FROM U_OS07_FILA
             WHERE USUARIO = :comp
-              AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+              AND DT_INCLUSAO >= TRUNC(SYSDATE)
             """,
             {"comp": computador},
         )
@@ -190,7 +224,7 @@ def _buscar_erros_detalhe(
               FROM U_OS07_FILA
              WHERE USUARIO  = :comp
                AND STATUS   = 'ERRO'
-               AND TRUNC(DT_INCLUSAO) = TRUNC(SYSDATE)
+               AND DT_INCLUSAO >= TRUNC(SYSDATE)
              ORDER BY POSICAO
             """,
             {"comp": computador},

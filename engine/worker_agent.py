@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 _SLEEP_IDLE = 30       # seconds to wait when queue is empty
 _SLEEP_ERROR = 10      # seconds to wait after an unexpected error
 _HEARTBEAT_EVERY = 30  # seconds between heartbeat updates
-_INTERRUPT_CHECK = 180 # seconds between interrupt checks (3 minutes)
+_INTERRUPT_CHECK = 60  # seconds between cancel/interrupt checks (1 minute)
 
 
 class _RobotCancelledError(BaseException):
