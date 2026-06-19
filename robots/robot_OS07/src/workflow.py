@@ -29,7 +29,6 @@ from robots.robot_OS07.src.agro_login import login_agro
 from robots.robot_OS07.src.database import buscar_notas_pendentes, buscar_notas_reclamadas
 from robots.robot_OS07.src.nota_router import process_note_by_config
 from robots.robot_OS07.src.queue_tracker import (
-    claim_next_batch,
     enviar_relatorio_final,
     limpar_fila,
     limpar_fila_pos_execucao,
@@ -66,15 +65,13 @@ def _reiniciar_agro() -> None:
 def run_once(log_id: int | None = None) -> None:
     """Single execution cycle: fetch pending notes and process all of them.
 
-    Fluxo multi-máquina sem race condition:
-      1. limpar_fila()      — libera notas presas de crash desta máquina de volta ao pool.
-      2. buscar_notas_pendentes() — busca candidatos na tabela fonte (exclui notas já no pool hoje).
-      3. popular_fila()     — insere candidatos no pool compartilhado (USUARIO='OS07_FILA').
-      4. claim_next_batch() — reivindica atomicamente N notas com FOR UPDATE SKIP LOCKED.
-      5. buscar_notas_reclamadas() — retorna dados completos das notas desta máquina.
-
-    FOR UPDATE SKIP LOCKED garante que dois robôs nunca processem a mesma nota,
-    mesmo consultando simultaneamente.
+    Fluxo multi-máquina:
+      1. limpar_fila()          — remove crash anterior desta máquina.
+      2. buscar_notas_pendentes() — busca candidatos (exclui notas já na fila hoje).
+      3. popular_fila()         — salva na fila com USUARIO = nome desta máquina.
+                                   NOT EXISTS impede outra máquina de pegar a mesma nota.
+      4. buscar_notas_reclamadas() — retorna só as notas que ESTA máquina salvou.
+                                      Se outra chegou primeiro, volta vazio e o ciclo encerra.
 
     When log_id is provided (called by the platform worker), task claiming and
     completion are handled by the worker. When log_id is None (legacy main.py
@@ -102,35 +99,33 @@ def run_once(log_id: int | None = None) -> None:
 
     print("\n Buscando notas OS07...")
 
-    # Passo 1: libera notas presas de crash de volta ao pool e busca novos candidatos
+    # Passo 1: limpa crash anterior e busca candidatos na tabela fonte
     try:
         with get_connection() as connection:
             limpar_fila(connection, COMPUTADOR_ROBO)
             candidatos = buscar_notas_pendentes(connection)
 
+        # Passo 2: salva na fila com USUARIO = nome desta máquina.
+        # NOT EXISTS garante que notas já salvas por outra máquina hoje não sejam duplicadas.
         with get_connection() as connection:
             popular_fila(connection, candidatos, COMPUTADOR_ROBO)
     except Exception as exc:
         print(f"[queue_tracker] Erro ao popular fila (não bloqueia execução): {exc}")
 
-    # Passo 2: reivindica atomicamente as notas para esta máquina (FOR UPDATE SKIP LOCKED)
-    # Garante que dois robôs nunca processem a mesma nota, mesmo que consultem ao mesmo tempo.
+    # Passo 3: busca apenas as notas que esta máquina conseguiu salvar na fila.
+    # Se outra máquina chegou primeiro (NOT EXISTS bloqueou), a lista volta vazia.
     with get_connection() as connection:
-        claimed = claim_next_batch(connection, COMPUTADOR_ROBO)
+        notas = buscar_notas_reclamadas(connection, COMPUTADOR_ROBO)
 
-    if not claimed:
-        print("Nenhuma nota disponível no pool para este robô.")
+    print(f"Notas encontradas 07: {len(notas)}")
+
+    if not notas:
+        print("Nenhuma nota pendente para esta máquina.")
         if not platform_managed:
             with get_connection() as connection:
                 complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
             print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
         return
-
-    # Passo 3: busca os dados completos das notas reivindicadas por esta máquina
-    with get_connection() as connection:
-        notas = buscar_notas_reclamadas(connection, COMPUTADOR_ROBO)
-
-    print(f"Notas encontradas 07: {len(notas)}")
 
     if _esta_interrompido():
         print(f"Robô interrompido externamente (log_id={log_id}). Abortando antes de abrir o Agro.")
