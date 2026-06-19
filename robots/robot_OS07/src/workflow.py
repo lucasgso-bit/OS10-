@@ -26,9 +26,10 @@ from robots.robot_OS07.src.agro_alerts import (
 )
 from robots.robot_OS07.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS07.src.agro_login import login_agro
-from robots.robot_OS07.src.database import buscar_notas_pendentes
+from robots.robot_OS07.src.database import buscar_notas_pendentes, buscar_notas_reclamadas
 from robots.robot_OS07.src.nota_router import process_note_by_config
 from robots.robot_OS07.src.queue_tracker import (
+    claim_next_batch,
     enviar_relatorio_final,
     limpar_fila,
     limpar_fila_pos_execucao,
@@ -40,9 +41,6 @@ from robots.robot_OS07.src.replacement_estab import (
     switch_establishment,
     wait_window_startswith,
 )
-
-_INTERRUPT_CHECK_INTERVAL = 180  # 3 minutos
-
 
 def _esta_interrompido() -> bool:
     """Retorna True se o robô não está mais EXECUTANDO em U_ROBOT_LOG."""
@@ -68,10 +66,15 @@ def _reiniciar_agro() -> None:
 def run_once(log_id: int | None = None) -> None:
     """Single execution cycle: fetch pending notes and process all of them.
 
-    buscar_notas_pendentes() already excludes notes claimed by other machines
-    today (via U_OS07_FILA), so two machines always receive different notes.
-    popular_fila() saves this machine's batch to the queue so the other machine
-    skips them on its next query.
+    Fluxo multi-máquina sem race condition:
+      1. limpar_fila()      — libera notas presas de crash desta máquina de volta ao pool.
+      2. buscar_notas_pendentes() — busca candidatos na tabela fonte (exclui notas já no pool hoje).
+      3. popular_fila()     — insere candidatos no pool compartilhado (USUARIO='OS07_FILA').
+      4. claim_next_batch() — reivindica atomicamente N notas com FOR UPDATE SKIP LOCKED.
+      5. buscar_notas_reclamadas() — retorna dados completos das notas desta máquina.
+
+    FOR UPDATE SKIP LOCKED garante que dois robôs nunca processem a mesma nota,
+    mesmo consultando simultaneamente.
 
     When log_id is provided (called by the platform worker), task claiming and
     completion are handled by the worker. When log_id is None (legacy main.py
@@ -99,27 +102,39 @@ def run_once(log_id: int | None = None) -> None:
 
     print("\n Buscando notas OS07...")
 
+    # Passo 1: libera notas presas de crash de volta ao pool e busca novos candidatos
+    try:
+        with get_connection() as connection:
+            limpar_fila(connection, COMPUTADOR_ROBO)
+            candidatos = buscar_notas_pendentes(connection)
+
+        with get_connection() as connection:
+            popular_fila(connection, candidatos, COMPUTADOR_ROBO)
+    except Exception as exc:
+        print(f"[queue_tracker] Erro ao popular fila (não bloqueia execução): {exc}")
+
+    # Passo 2: reivindica atomicamente as notas para esta máquina (FOR UPDATE SKIP LOCKED)
+    # Garante que dois robôs nunca processem a mesma nota, mesmo que consultem ao mesmo tempo.
     with get_connection() as connection:
-        notas = buscar_notas_pendentes(connection)
+        claimed = claim_next_batch(connection, COMPUTADOR_ROBO)
 
-    print(f"Notas encontradas 07: {len(notas)}")
-
-    if not notas:
-        print("Nenhuma nota pendente.")
+    if not claimed:
+        print("Nenhuma nota disponível no pool para este robô.")
         if not platform_managed:
             with get_connection() as connection:
                 complete_task(connection, log_id, computer_name=COMPUTADOR_ROBO)
             print(f"Tarefa log_id={log_id} marcada como CONCLUIDO.")
         return
 
-    # Salva as notas desta máquina na fila — outras máquinas as ignorarão
-    # na próxima consulta (buscar_notas_pendentes exclui notas já na fila hoje)
-    try:
-        with get_connection() as connection:
-            limpar_fila(connection, COMPUTADOR_ROBO)
-            popular_fila(connection, notas, COMPUTADOR_ROBO)
-    except Exception as exc:
-        print(f"[queue_tracker] Erro ao popular fila (não bloqueia execução): {exc}")
+    # Passo 3: busca os dados completos das notas reivindicadas por esta máquina
+    with get_connection() as connection:
+        notas = buscar_notas_reclamadas(connection, COMPUTADOR_ROBO)
+
+    print(f"Notas encontradas 07: {len(notas)}")
+
+    if _esta_interrompido():
+        print(f"Robô interrompido externamente (log_id={log_id}). Abortando antes de abrir o Agro.")
+        return
 
     print("Iniciando Agro...")
     kill_agro_process("Agro3C.exe")
@@ -137,17 +152,10 @@ def run_once(log_id: int | None = None) -> None:
 
     print("Agro pronto para uso.")
 
-    ultimo_check = time.time()
-
     for nota in notas:
-        # A cada 3 minutos, consulta U_ROBOT_LOG para ver se o robô foi interrompido
-        if time.time() - ultimo_check >= _INTERRUPT_CHECK_INTERVAL:
-            if _esta_interrompido():
-                print(
-                    f"Robô interrompido externamente (log_id={log_id}). Parando processamento."
-                )
-                return
-            ultimo_check = time.time()
+        if _esta_interrompido():
+            print(f"Robô interrompido externamente (log_id={log_id}). Parando processamento.")
+            return
 
         id_nota = nota.get("U_FISCAL_IO_CONT_ID")
         try:

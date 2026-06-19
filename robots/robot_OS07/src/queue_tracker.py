@@ -41,11 +41,11 @@ _EMAIL_TO = [
 
 
 def limpar_fila(conn: oracledb.Connection, computador: str) -> None:
-    """Remove linhas antigas e notas presas de crash desta máquina.
+    """Remove linhas antigas e libera notas presas de crash desta máquina de volta ao pool.
 
-    1. Apaga todos os registros de dias anteriores (histórico acumulado).
-    2. Apaga PENDENTE do dia atual — notas que ficaram presas num crash anterior,
-       liberando-as para serem re-consultadas por qualquer máquina.
+    1. Apaga todos os registros de dias anteriores para esta máquina e do pool.
+    2. Notas PENDENTE reivindicadas por esta máquina (crash anterior) são devolvidas
+       ao pool compartilhado ('OS07_FILA') para serem reivindicadas novamente.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -62,6 +62,17 @@ def limpar_fila(conn: oracledb.Connection, computador: str) -> None:
         cur.execute(
             """
             DELETE FROM U_OS07_FILA
+             WHERE USUARIO     = 'OS07_FILA'
+               AND DT_INCLUSAO < TRUNC(SYSDATE)
+            """,
+        )
+        if cur.rowcount:
+            print(f"[fila] {cur.rowcount} registro(s) do pool de dias anteriores removidos.")
+
+        cur.execute(
+            """
+            UPDATE U_OS07_FILA
+               SET USUARIO = 'OS07_FILA'
              WHERE USUARIO     = :comp
                AND STATUS      = 'PENDENTE'
                AND DT_INCLUSAO >= TRUNC(SYSDATE)
@@ -69,7 +80,7 @@ def limpar_fila(conn: oracledb.Connection, computador: str) -> None:
             {"comp": computador},
         )
         if cur.rowcount:
-            print(f"[fila] {cur.rowcount} nota(s) pendentes anteriores removidas para re-processamento.")
+            print(f"[fila] {cur.rowcount} nota(s) devolvidas ao pool após crash anterior.")
 
     conn.commit()
 
@@ -98,11 +109,11 @@ def limpar_fila_pos_execucao(conn: oracledb.Connection, computador: str) -> None
 def popular_fila(
     conn: oracledb.Connection, notas: list[dict[str, Any]], computador: str
 ) -> None:
-    """Insere as notas desta máquina na fila compartilhada.
+    """Insere notas no pool compartilhado da fila.
 
-    USUARIO = nome da máquina (COMPUTADOR_ROBO) — identifica quem está
-    processando cada nota. WHERE NOT EXISTS garante que notas já salvas
-    por outra máquina hoje não sejam duplicadas.
+    USUARIO = 'OS07_FILA' — marca a nota como disponível para qualquer máquina.
+    WHERE NOT EXISTS garante que notas já no pool hoje não sejam duplicadas,
+    independente de qual máquina as inseriu.
     """
     agora = datetime.now()
     inseridos = 0
@@ -116,7 +127,7 @@ def popular_fila(
                     (USUARIO, CONT_ID, NUMERONOTA, NOTACONF, ESTAB,
                      POSICAO, STATUS, DT_INCLUSAO, DT_PREVISAO)
                 SELECT
-                    :usuario, :cont_id, :numeronota, :notaconf, :estab,
+                    'OS07_FILA', :cont_id, :numeronota, :notaconf, :estab,
                     :posicao, 'PENDENTE', SYSTIMESTAMP, :previsao
                 FROM DUAL
                 WHERE NOT EXISTS (
@@ -126,7 +137,6 @@ def popular_fila(
                 )
                 """,
                 {
-                    "usuario": computador,
                     "cont_id": nota.get("U_FISCAL_IO_CONT_ID"),
                     "numeronota": str(nota.get("NUMERONOTA") or ""),
                     "notaconf": str(nota.get("NOTACONF") or ""),
@@ -141,9 +151,46 @@ def popular_fila(
 
     previsao_final = agora + timedelta(minutes=len(notas) * _MINUTOS_POR_NOTA)
     print(
-        f"[fila] {inseridos} nota(s) salvas para '{computador}'. "
+        f"[fila] {inseridos} nota(s) adicionadas ao pool. "
         f"Previsão de término: {previsao_final.strftime('%H:%M')}."
     )
+
+
+def claim_next_batch(
+    conn: oracledb.Connection, computador: str, batch_size: int = 10
+) -> int:
+    """Reivindica atomicamente até batch_size notas do pool para esta máquina.
+
+    Usa FOR UPDATE SKIP LOCKED para garantir que duas máquinas nunca
+    reivindiquem a mesma nota simultaneamente — sem race conditions.
+
+    Retorna o número de notas reivindicadas.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE U_OS07_FILA
+               SET USUARIO = :comp
+             WHERE ROWID IN (
+                SELECT ROWID FROM U_OS07_FILA
+                 WHERE USUARIO = 'OS07_FILA'
+                   AND STATUS  = 'PENDENTE'
+                   AND DT_INCLUSAO >= TRUNC(SYSDATE)
+                 ORDER BY POSICAO ASC
+                 FETCH FIRST :batch ROWS ONLY
+                 FOR UPDATE SKIP LOCKED
+             )
+            """,
+            {"comp": computador, "batch": batch_size},
+        )
+        claimed = cur.rowcount
+        conn.commit()
+
+    if claimed:
+        print(f"[fila] {claimed} nota(s) reivindicada(s) para '{computador}'.")
+    else:
+        print(f"[fila] Nenhuma nota disponível no pool para '{computador}'.")
+    return claimed
 
 
 def marcar_concluido(

@@ -285,3 +285,175 @@ def _to_float_or_none(valor: Any) -> float | None:
         return float(_converter_decimal(valor))
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Agro note launching queries
+# ---------------------------------------------------------------------------
+
+
+def buscar_notas_para_lancar(conn: oracledb.Connection) -> list[dict[str, Any]]:
+    """Return all pending TicketLog notes not yet launched in Agro.
+
+    Uses STATUS_VALIDADO (checked against NFCAB) to filter out notes already
+    posted. Results are ordered CODIGO_LOTE ASC so the first batch is processed
+    first. Multiple rows per NUMERO_NOTA are expected when a note has items with
+    different NCM codes — group by NUMERO_NOTA + SERIE on the caller side.
+    """
+    sql = """
+WITH MAPA_ITEM AS (
+    SELECT 27101259 AS NCM, 77606 AS ITEM, 1653 AS CFOP_DENTRO_UF, 2653 AS CFOP_FORA_UF FROM DUAL
+    UNION ALL
+    SELECT 27101921 AS NCM, 77607 AS ITEM, 1653 AS CFOP_DENTRO_UF, 2653 AS CFOP_FORA_UF FROM DUAL
+    UNION ALL
+    SELECT 22071090 AS NCM, 77608 AS ITEM, 1653 AS CFOP_DENTRO_UF, 2653 AS CFOP_FORA_UF FROM DUAL
+    UNION ALL
+    SELECT 31021010 AS NCM, 77609 AS ITEM, 1556 AS CFOP_DENTRO_UF, 2556 AS CFOP_FORA_UF FROM DUAL
+),
+BASE AS (
+    SELECT
+        UTIN.CODIGO_LOTE,
+        CONTAMOV.NUMEROCM,
+        UTIN.NCM,
+        MAPA_ITEM.ITEM,
+        ITEMAGRO.DESCRICAO,
+        UTL.NUMERO_NOTA,
+        UTL.SERIE,
+        UTIN.QUANTIDADE,
+        UTIN.VALOR_UNITARIO,
+        UTL.CHAVE_ACESSO,
+        FILIAL.ESTAB,
+        CIDADE_FILIAL.UF AS UF_ESTAB,
+        CIDADE_CLIENTE.UF AS UF_CLIENTE,
+        CASE
+            WHEN TRIM(UPPER(CIDADE_FILIAL.UF)) = TRIM(UPPER(CIDADE_CLIENTE.UF))
+                THEN MAPA_ITEM.CFOP_DENTRO_UF
+            ELSE MAPA_ITEM.CFOP_FORA_UF
+        END AS CFOP,
+        65 AS NOTACONF,
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                  FROM NFCAB NF
+                 WHERE NF.NUMEROCM = CONTAMOV.NUMEROCM
+                   AND NF.NOTA     = UTL.NUMERO_NOTA
+                   AND TRIM(NF.SERIE) = TRIM(UTL.SERIE)
+            ) THEN 'LANCADA'
+            ELSE 'PENDENTE'
+        END AS STATUS_VALIDADO
+    FROM U_TICKETLOG_NOTAS_LOTE UTL
+    INNER JOIN U_TICKETLOG_ITENS_NOTA UTIN
+            ON UTIN.CODIGO_LOTE   = UTL.CODIGO_LOTE
+           AND UTIN.CHAVE_ACESSO  = UTL.CHAVE_ACESSO
+           AND UTIN.NUMERO_NOTA   = UTL.NUMERO_NOTA
+    INNER JOIN MAPA_ITEM
+            ON MAPA_ITEM.NCM = UTIN.NCM
+    INNER JOIN ITEMAGRO
+            ON ITEMAGRO.ITEM = MAPA_ITEM.ITEM
+    INNER JOIN CONTAMOV
+            ON CONTAMOV.INSCESTAD = UTL.INSCRICAO_ESTADUAL
+    INNER JOIN CONCEITOPESSOA
+            ON CONCEITOPESSOA.NUMEROCM = CONTAMOV.NUMEROCM
+    INNER JOIN FILIAL
+            ON FILIAL.CNPJ = UTL.CNPJ
+    INNER JOIN CIDADE CIDADE_FILIAL
+            ON CIDADE_FILIAL.CIDADE = FILIAL.CIDADE
+    INNER JOIN CIDADE CIDADE_CLIENTE
+            ON CIDADE_CLIENTE.CIDADE = CONTAMOV.CIDADE
+    WHERE UTL.STATUS = 'PENDENTE'
+      AND CONCEITOPESSOA.CONCEITO <> 98
+)
+SELECT
+    BASE.CODIGO_LOTE,
+    BASE.NUMEROCM,
+    BASE.NCM,
+    BASE.ITEM,
+    BASE.DESCRICAO,
+    BASE.NUMERO_NOTA,
+    BASE.SERIE,
+    SUM(BASE.QUANTIDADE) AS QUANTIDADE,
+    CASE
+        WHEN SUM(BASE.QUANTIDADE) = 0 THEN 0
+        ELSE SUM(BASE.QUANTIDADE * BASE.VALOR_UNITARIO) / SUM(BASE.QUANTIDADE)
+    END AS VALOR_UNITARIO,
+    SUM(BASE.QUANTIDADE * BASE.VALOR_UNITARIO) AS VALOR_TOTAL,
+    BASE.CHAVE_ACESSO,
+    BASE.ESTAB,
+    BASE.UF_ESTAB,
+    BASE.UF_CLIENTE,
+    BASE.CFOP,
+    BASE.NOTACONF,
+    'PENDENTE' AS STATUS
+FROM BASE
+WHERE BASE.STATUS_VALIDADO = 'PENDENTE'
+GROUP BY
+    BASE.CODIGO_LOTE,
+    BASE.NUMEROCM,
+    BASE.NCM,
+    BASE.ITEM,
+    BASE.DESCRICAO,
+    BASE.NUMERO_NOTA,
+    BASE.SERIE,
+    BASE.CHAVE_ACESSO,
+    BASE.ESTAB,
+    BASE.UF_ESTAB,
+    BASE.UF_CLIENTE,
+    BASE.CFOP,
+    BASE.NOTACONF
+ORDER BY
+    BASE.CODIGO_LOTE ASC,
+    BASE.NUMERO_NOTA ASC,
+    BASE.ITEM ASC
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
+
+
+def marcar_nota_lancada(
+    conn: oracledb.Connection,
+    numero_nota: str,
+    serie: str,
+    codigo_lote: int,
+) -> None:
+    """Mark a note as LANCADA in U_TICKETLOG_NOTAS_LOTE after posting in Agro."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE U_TICKETLOG_NOTAS_LOTE
+               SET STATUS = 'LANCADA'
+             WHERE NUMERO_NOTA  = :num
+               AND TRIM(SERIE)  = TRIM(:serie)
+               AND CODIGO_LOTE  = :lote
+               AND STATUS       = 'PENDENTE'
+            """,
+            {"num": numero_nota, "serie": serie, "lote": codigo_lote},
+        )
+    conn.commit()
+
+
+def atualizar_notas_lancadas_diferente(conn: oracledb.Connection) -> int:
+    """Mark as LANCADO DIFERENTE RPA.OS02 notes already in NFCAB but still PENDENTE.
+
+    These notes exist in NFCAB but were not launched by this RPA — launched
+    manually or by another process. Must run before buscar_notas_para_lancar
+    so they are excluded from the launch queue.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            UPDATE U_TICKETLOG_NOTAS_LOTE UTL
+               SET UTL.STATUS = 'LANCADO DIFERENTE RPA.OS02'
+             WHERE UTL.STATUS = 'PENDENTE'
+               AND EXISTS (
+                   SELECT 1
+                     FROM NFCAB NF
+                    INNER JOIN CONTAMOV C ON C.INSCESTAD = UTL.INSCRICAO_ESTADUAL
+                    WHERE NF.NUMEROCM = C.NUMEROCM
+                      AND NF.NOTA     = UTL.NUMERO_NOTA
+                      AND TRIM(NF.SERIE) = TRIM(UTL.SERIE)
+               )
+        """)
+        updated = cur.rowcount
+    conn.commit()
+    return updated

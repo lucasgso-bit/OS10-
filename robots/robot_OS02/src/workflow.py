@@ -20,6 +20,7 @@ from typing import Any
 import requests
 
 from config import (
+    AGRO_EXE,
     COMPUTADOR_ROBO,
     TICKETLOG_AUTHORIZATION,
     TICKETLOG_BASE_URL,
@@ -31,15 +32,29 @@ from core.database import (
     get_connection,
     marcar_executando,
 )
-from robots.robot_OS20.src.database import (
+from robots.robot_OS02.src.agro_alerts import (
+    confirm_attention_popup,
+    confirm_establishment_selection,
+)
+from robots.robot_OS02.src.agro_app import kill_agro_process, start_agro
+from robots.robot_OS02.src.agro_estab import (
+    switch_establishment,
+    wait_window_startswith,
+)
+from robots.robot_OS02.src.agro_login import login_agro
+from robots.robot_OS02.src.database import (
+    atualizar_notas_lancadas_diferente,
     buscar_chaves_lote,
     buscar_lotes_completos,
+    buscar_notas_para_lancar,
     get_os20_connection,
     inserir_itens_nota,
     inserir_nota,
+    marcar_nota_lancada,
     upsert_status_lote,
 )
-from robots.robot_OS20.src.notifier import enviar_relatorio_importacao
+from robots.robot_OS02.src.lancamento import lancar_nota_65
+from robots.robot_OS02.src.notifier import enviar_relatorio_importacao
 
 CODIGO_TIPO_CARTAO = 4
 
@@ -195,13 +210,73 @@ def _converter_decimal(valor: Any) -> Decimal:
     return Decimal(texto)
 
 
-def run_once(log_id: int | None = None) -> None:
-    """Import Ticket Log notes incrementally.
+def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> None:
+    """Launch all pending notes in Agro, first batch first.
 
-    - Lotes already marked 100% complete are skipped (no API call).
-    - For partial lotes, only notes with unknown CHAVE_ACESSO are inserted.
-    - A shared requests.Session reuses the TCP connection across all calls.
-    - A short sleep between establishment queries prevents API rate limiting.
+    Groups rows by CODIGO_LOTE (ascending) then by NUMERO_NOTA + SERIE.
+    For each unique note, switches to the correct ESTAB, navigates to the
+    NOTACONF 65 entry screen, and marks the note as LANCADA in the DB.
+    """
+    # Build: {codigo_lote: {numero_nota|serie: [itens]}}
+    lotes: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    for linha in notas:
+        lote = int(linha["CODIGO_LOTE"])
+        chave_nota = f"{linha['NUMERO_NOTA']}|{linha['SERIE']}"
+        lotes.setdefault(lote, {}).setdefault(chave_nota, []).append(linha)
+
+    kill_agro_process("Agro3C.exe")
+    start_agro(AGRO_EXE)
+    time.sleep(5)
+
+    login_agro()
+    print("[OS02] Login realizado.")
+
+    confirm_attention_popup()
+    confirm_establishment_selection()
+
+    if not wait_window_startswith("AGRO-AG", timeout_seconds=15):
+        raise RuntimeError("[OS02] Tela AGRO-AG não abriu após login.")
+
+    with get_os20_connection() as conn:
+        for codigo_lote in sorted(lotes.keys()):
+            notas_lote = lotes[codigo_lote]
+            print(f"\n[OS02] === Lote {codigo_lote} | {len(notas_lote)} nota(s) ===")
+
+            for chave_nota, itens in notas_lote.items():
+                header = itens[0]
+                estab = int(header["ESTAB"])
+                numero_nota = str(header["NUMERO_NOTA"]).strip()
+                serie = str(header["SERIE"]).strip()
+
+                print(f"[OS02] Nota {numero_nota} série {serie} | estab {estab}")
+
+                if not switch_establishment(estab):
+                    print(f"[OS02] Falha ao trocar para estab {estab}. Pulando nota.")
+                    continue
+
+                sucesso = lancar_nota_65(header, itens)
+
+                if sucesso:
+                    marcar_nota_lancada(conn, numero_nota, serie, codigo_lote)
+                    print(f"[OS02] Nota {numero_nota} marcada como LANCADA.")
+                else:
+                    print(f"[OS02] Falha ao lançar nota {numero_nota}.")
+
+    kill_agro_process("Agro3C.exe")
+    print("[OS02] Agro encerrado.")
+
+
+def run_once(log_id: int | None = None) -> None:
+    """OS20 main cycle.
+
+    Phase 1 — Launch notes in Agro:
+      While there are rows with STATUS_VALIDADO='PENDENTE' in
+      U_TICKETLOG_NOTAS_LOTE (i.e., not yet in NFCAB), launch them in Agro
+      and return. The orchestrator schedules a new execution; Phase 2 only
+      runs when the query returns empty.
+
+    Phase 2 — Consult TicketLog API:
+      No pending notes remain → import new lots from the API into Oracle.
     """
     platform_managed = log_id is not None
 
@@ -225,6 +300,35 @@ def run_once(log_id: int | None = None) -> None:
             log_id = proximo["u_robot_log_id"]
             marcar_executando(connection, log_id, COMPUTADOR_ROBO)
             print(f"Tarefa log_id={log_id} marcada como EXECUTANDO.")
+
+    # ------------------------------------------------------------------
+    # Pre-phase: mark notes already in NFCAB (not by this RPA) before anything
+    # ------------------------------------------------------------------
+    with get_os20_connection() as conn:
+        atualizadas = atualizar_notas_lancadas_diferente(conn)
+        if atualizadas:
+            print(
+                f"[OS02] {atualizadas} nota(s) marcada(s) como LANCADO DIFERENTE RPA.OS02."
+            )
+
+    # ------------------------------------------------------------------
+    # Phase 1: launch pending notes in Agro (first batch first)
+    # ------------------------------------------------------------------
+    with get_os20_connection() as conn:
+        notas_pendentes = buscar_notas_para_lancar(conn)
+
+    if notas_pendentes:
+        print(
+            f"\n[OS02] {len(notas_pendentes)} linha(s) pendente(s) para lançar. Iniciando Agro..."
+        )
+        _lancar_notas_em_agro(notas_pendentes)
+        print("[OS02] Fase 1 concluída. Próximo ciclo verificará notas restantes.")
+        return
+
+    # ------------------------------------------------------------------
+    # Phase 2: no pending notes → consult TicketLog API
+    # ------------------------------------------------------------------
+    print("[OS02] Nenhuma nota pendente para lançar. Consultando API Ticket Log...")
 
     session = requests.Session()
     session.headers.update(

@@ -98,6 +98,65 @@ FETCH FIRST 10 ROWS ONLY """
         return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
+def buscar_notas_reclamadas(connection: oracledb.Connection, computador: str) -> list[dict[str, Any]]:
+    """Retorna os dados completos das notas reivindicadas por esta máquina hoje.
+
+    Chamada após claim_next_batch() para obter o dict completo de cada nota
+    necessário para o processamento (mesmas colunas de buscar_notas_pendentes).
+    """
+    sql = """
+        SELECT
+          N.U_FISCAL_IO_CONT_ID,
+          N.CHAVEACESSO,
+          N.DTEMISS,
+          N.NUMERONOTA,
+          N.SERIE,
+          N.CNPJF,
+          N.IEEMITENTE,
+          N.ESTAB,
+          N.CFOP,
+          N.PLACA,
+          N.NCM,
+          N.ITEM,
+          N.QUANTIDADE,
+          N.UNIDADETRIBUTAVEL,
+          N.VALORTOTAL,
+          N.ORDEMCARGA,
+          N.LOCALESTOQUE,
+          N.CONTRATO,
+          N.PRODUTOR,
+          N.STATUS,
+          N.MENSAGEMERRO,
+          N.DTPROCESSAMENTO,
+          N.REPROCESSADO,
+          N.SEQENDERECO,
+          N.DIFVIASOFT,
+          N.DIFAPP,
+          N.ESTABCONTRATO,
+          N.VALIDANCM,
+          N.NOTACONF,
+          N.TIPOBAIXA,
+          N.CONTCONF,
+          N.STATUS_NOTA,
+          N.NOTAFILHA,
+          N.CLASSIF_LOCAL,
+          N.NUMEROCM,
+          N.DTEMISSAO,
+          N.DATA_EMISSAO
+        FROM U_OS07_FILA F
+        INNER JOIN OS_RPA_NOTA_07 N ON N.U_FISCAL_IO_CONT_ID = F.CONT_ID
+        WHERE F.USUARIO     = :comp
+          AND F.STATUS      = 'PENDENTE'
+          AND F.DT_INCLUSAO >= TRUNC(SYSDATE)
+        ORDER BY F.POSICAO ASC
+    """
+    with connection.cursor() as cursor:
+        cursor.execute(sql, {"comp": computador})
+        assert cursor.description is not None
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+
+
 def buscar_estab_logado(connection: oracledb.Connection) -> int:
     """Fetch the active establishment logged for the robot user."""
     sql = """
