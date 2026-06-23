@@ -12,7 +12,7 @@ Version: 1.0.0
 from __future__ import annotations
 
 from robots.base import BaseRobot
-from robots.robot_OS20.src.workflow import run_once
+from robots.robot_OS02.src.workflow import run_once
 
 
 class Robot(BaseRobot):

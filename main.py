@@ -35,9 +35,14 @@ def main() -> None:
             module_path = ROBOT_REGISTRY.get(robot_id)
 
             if not module_path:
-                print(f"Nenhum módulo registrado para robot_id={robot_id} (log_id={task['log_id']}) — marcando ERRO e tentando próximo.")
+                print(
+                    f"Nenhum módulo registrado para robot_id={robot_id} (log_id={task['log_id']}) — marcando ERRO e tentando próximo."
+                )
                 with get_connection() as conn:
-                    fail_task(conn, task["log_id"], f"Nenhum módulo registrado para robot_id={robot_id}")
+                    print(
+                        f"Nenhum módulo registrado para robot_id={robot_id} (log_id={task['log_id']}) — marcando ERRO e tentando próximo."
+                    )
+                    # fail_task(conn, task["log_id"], f"Nenhum módulo registrado para robot_id={robot_id}")
                 continue
 
             module = importlib.import_module(module_path)
@@ -53,6 +58,7 @@ def main() -> None:
 
 def _computer_name() -> str:
     from config import COMPUTADOR_ROBO
+
     return COMPUTADOR_ROBO
 
 

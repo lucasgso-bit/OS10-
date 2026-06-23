@@ -17,6 +17,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import pyautogui
 import requests
 
 from config import (
@@ -29,6 +30,8 @@ from config import (
 from core.database import (
     buscar_executando,
     buscar_proximo_pendente,
+    complete_task,
+    fail_task,
     get_connection,
     marcar_executando,
 )
@@ -38,6 +41,7 @@ from robots.robot_OS02.src.agro_alerts import (
 )
 from robots.robot_OS02.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS02.src.agro_estab import (
+    focus_window,
     switch_establishment,
     wait_window_startswith,
 )
@@ -53,8 +57,12 @@ from robots.robot_OS02.src.database import (
     marcar_nota_lancada,
     upsert_status_lote,
 )
-from robots.robot_OS02.src.lancamento import lancar_nota_65
-from robots.robot_OS02.src.notifier import enviar_relatorio_importacao
+from robots.robot_OS02.src.lancamento import lancar_nota_162
+from robots.robot_OS02.src.notifier import (
+    enviar_relatorio_importacao,
+    notify_conclusao,
+    notify_error,
+)
 
 CODIGO_TIPO_CARTAO = 4
 
@@ -66,6 +74,9 @@ PERCENTUAL_MINIMO = Decimal("95")
 # Pause between each establishment's note queries to avoid API rate limiting.
 # 0.5 s is conservative; lower only if the API proves more permissive.
 _DELAY_ENTRE_ESTABELECIMENTOS = 0.5
+
+# Maximum notes to launch per run — increase after testing.
+LIMITE_NOTAS_TESTE = 2
 
 
 def _fazer_get(
@@ -210,19 +221,77 @@ def _converter_decimal(valor: Any) -> Decimal:
     return Decimal(texto)
 
 
-def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> None:
-    """Launch all pending notes in Agro, first batch first.
+def _recuperar_agro() -> bool:
+    """Close stray windows and return focus to AGRO-AG.
 
-    Groups rows by CODIGO_LOTE (ascending) then by NUMERO_NOTA + SERIE.
-    For each unique note, switches to the correct ESTAB, navigates to the
-    NOTACONF 65 entry screen, and marks the note as LANCADA in the DB.
+    Tries Escape + Ctrl+F4 first; falls back to a full Agro restart only
+    if AGRO-AG is no longer reachable.  Returns True when AGRO-AG is ready.
     """
-    # Build: {codigo_lote: {numero_nota|serie: [itens]}}
-    lotes: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    for _ in range(3):
+        pyautogui.press("escape")
+        time.sleep(0.3)
+    for _ in range(3):
+        pyautogui.hotkey("ctrl", "f4")
+        time.sleep(0.5)
+
+    if wait_window_startswith("AGRO-AG", timeout_seconds=5):
+        focus_window("AGRO-AG")
+        return True
+
+    print("[OS02] AGRO-AG não encontrado — reiniciando Agro...")
+    kill_agro_process("Agro3C.exe")
+    start_agro(AGRO_EXE)
+    time.sleep(5)
+    login_agro()
+    confirm_attention_popup()
+    confirm_establishment_selection()
+    return wait_window_startswith("AGRO-AG", timeout_seconds=15)
+
+
+def _imprimir_relatorio(relatorio: list[dict[str, Any]]) -> None:
+    sucessos = [r for r in relatorio if r["status"] == "OK"]
+    erros = [r for r in relatorio if r["status"] == "ERRO"]
+    sep = "=" * 55
+    print(f"\n{sep}")
+    print("RELATÓRIO OS02 — LANÇAMENTO DE NOTAS")
+    print(sep)
+    print(f"Total: {len(relatorio)} | Sucesso: {len(sucessos)} | Erro: {len(erros)}")
+    if sucessos:
+        print("\nSUCESSO:")
+        for r in sucessos:
+            print(f"  Nota {r['nota']} | Estab {r['estab']} | Lote {r['lote']}")
+    if erros:
+        print("\nERROS:")
+        for r in erros:
+            print(f"  Nota {r['nota']} | Estab {r['estab']} | Lote {r['lote']} — {r.get('motivo', '')}")
+    print(sep)
+
+
+def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Launch pending notes in Agro grouped by establishment.
+
+    Processes at most LIMITE_NOTAS_TESTE notes per run.  On error per note,
+    attempts soft recovery (Escape/Ctrl+F4) and falls back to a full Agro
+    restart if AGRO-AG is unreachable.  Returns a report list with one entry
+    per note (status "OK" or "ERRO").
+    """
+    # Build ordered flat list: [(estab, lote, chave, itens), ...] preserving
+    # DB order (ESTAB ASC, LOTE ASC, NOTA ASC) and applying the test limit.
+    vistas: set[str] = set()
+    notas_unicas: list[str] = []
+    itens_por_chave: dict[str, list[dict[str, Any]]] = {}
     for linha in notas:
-        lote = int(linha["CODIGO_LOTE"])
-        chave_nota = f"{linha['NUMERO_NOTA']}|{linha['SERIE']}"
-        lotes.setdefault(lote, {}).setdefault(chave_nota, []).append(linha)
+        chave = (
+            f"{linha['ESTAB']}|{linha['CODIGO_LOTE']}|"
+            f"{linha['NUMERO_NOTA']}|{linha['SERIE']}"
+        )
+        itens_por_chave.setdefault(chave, []).append(linha)
+        if chave not in vistas:
+            vistas.add(chave)
+            notas_unicas.append(chave)
+
+    notas_unicas = notas_unicas[:LIMITE_NOTAS_TESTE]
+    print(f"[OS02] Processando {len(notas_unicas)} nota(s) (limite: {LIMITE_NOTAS_TESTE})")
 
     kill_agro_process("Agro3C.exe")
     start_agro(AGRO_EXE)
@@ -237,46 +306,99 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> None:
     if not wait_window_startswith("AGRO-AG", timeout_seconds=15):
         raise RuntimeError("[OS02] Tela AGRO-AG não abriu após login.")
 
+    relatorio: list[dict[str, Any]] = []
+    estab_atual: int | None = None
+    is_first_note = True
+
     with get_os20_connection() as conn:
-        for codigo_lote in sorted(lotes.keys()):
-            notas_lote = lotes[codigo_lote]
-            print(f"\n[OS02] === Lote {codigo_lote} | {len(notas_lote)} nota(s) ===")
+        for idx, chave in enumerate(notas_unicas):
+            itens = itens_por_chave[chave]
+            header = itens[0]
+            estab = int(header["ESTAB"])
+            codigo_lote = int(header["CODIGO_LOTE"])
+            numero_nota = str(header["NUMERO_NOTA"]).strip()
+            serie = str(header["SERIE"]).strip()
 
-            for chave_nota, itens in notas_lote.items():
-                header = itens[0]
-                estab = int(header["ESTAB"])
-                numero_nota = str(header["NUMERO_NOTA"]).strip()
-                serie = str(header["SERIE"]).strip()
+            # Next note same estab? → keep form open; otherwise close it.
+            is_last = idx == len(notas_unicas) - 1
+            if not is_last:
+                next_estab = int(itens_por_chave[notas_unicas[idx + 1]][0]["ESTAB"])
+                close_form = next_estab != estab
+            else:
+                close_form = True
 
-                print(f"[OS02] Nota {numero_nota} série {serie} | estab {estab}")
+            print(f"\n[OS02] Nota {numero_nota} série {serie} | estab {estab} | lote {codigo_lote}")
 
+            # Switch estab only when it changes
+            if estab != estab_atual:
                 if not switch_establishment(estab):
-                    print(f"[OS02] Falha ao trocar para estab {estab}. Pulando nota.")
+                    motivo = f"Falha ao trocar para estab {estab}"
+                    print(f"[OS02] {motivo}. Pulando nota.")
+                    relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "ERRO", "motivo": motivo})
                     continue
+                estab_atual = estab
+                is_first_note = True
 
-                sucesso = lancar_nota_65(header, itens)
+            try:
+                sucesso = lancar_nota_162(header, itens, is_first_note=is_first_note, close_form=close_form)
 
                 if sucesso:
                     marcar_nota_lancada(conn, numero_nota, serie, codigo_lote)
+                    relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "OK"})
                     print(f"[OS02] Nota {numero_nota} marcada como LANCADA.")
+
+                    if not close_form:
+                        # Same estab: press Ctrl+Insert to open next record
+                        pyautogui.hotkey("ctrl", "insert")
+                        time.sleep(6)
+                        is_first_note = False
+                    else:
+                        is_first_note = True
                 else:
-                    print(f"[OS02] Falha ao lançar nota {numero_nota}.")
+                    motivo = "lancar_nota_162 retornou False"
+                    print(f"[OS02] Falha ao lançar nota {numero_nota}. Tentando recuperar...")
+                    relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "ERRO", "motivo": motivo})
+                    notify_error(header, motivo)
+                    if _recuperar_agro():
+                        estab_atual = None
+                        is_first_note = True
+                    else:
+                        print("[OS02] Recuperação falhou. Abortando lançamentos.")
+                        break
+
+            except Exception as exc:
+                motivo = str(exc)
+                print(f"[OS02] Erro inesperado na nota {numero_nota}: {motivo}")
+                relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "ERRO", "motivo": motivo})
+                notify_error(header, motivo)
+                try:
+                    kill_agro_process("Agro3C.exe")
+                    start_agro(AGRO_EXE)
+                    time.sleep(5)
+                    login_agro()
+                    confirm_attention_popup()
+                    confirm_establishment_selection()
+                    if not wait_window_startswith("AGRO-AG", timeout_seconds=15):
+                        print("[OS02] Agro não recuperou. Abortando lançamentos.")
+                        break
+                except Exception as restart_exc:
+                    print(f"[OS02] Falha ao reiniciar Agro: {restart_exc}. Abortando.")
+                    break
+                estab_atual = None
+                is_first_note = True
 
     kill_agro_process("Agro3C.exe")
     print("[OS02] Agro encerrado.")
+    return relatorio
 
 
 def run_once(log_id: int | None = None) -> None:
-    """OS20 main cycle.
+    """OS02 main cycle.
 
-    Phase 1 — Launch notes in Agro:
-      While there are rows with STATUS_VALIDADO='PENDENTE' in
-      U_TICKETLOG_NOTAS_LOTE (i.e., not yet in NFCAB), launch them in Agro
-      and return. The orchestrator schedules a new execution; Phase 2 only
-      runs when the query returns empty.
+    Phase 1 — Launch notes in Agro.
+    Phase 2 — Consult TicketLog API when no notes are pending.
 
-    Phase 2 — Consult TicketLog API:
-      No pending notes remain → import new lots from the API into Oracle.
+    U_ROBOT_LOG updated to CONCLUIDO on success, ERRO on unhandled exception.
     """
     platform_managed = log_id is not None
 
@@ -297,10 +419,32 @@ def run_once(log_id: int | None = None) -> None:
                 print("Nenhuma tarefa pendente na fila.")
                 return
 
-            log_id = proximo["u_robot_log_id"]
+            log_id = int(proximo["u_robot_log_id"])
             marcar_executando(connection, log_id, COMPUTADOR_ROBO)
             print(f"Tarefa log_id={log_id} marcada como EXECUTANDO.")
 
+    try:
+        _run_once_body(log_id)
+    except Exception as exc:
+        print(f"[OS02] Erro na execução: {exc}")
+        try:
+            with get_connection() as conn:
+                fail_task(conn, log_id, f"Erro: {str(exc)[:3990]}")
+            print(f"[OS02] U_ROBOT_LOG {log_id} → ERRO")
+        except Exception as e2:
+            print(f"[OS02] Falha ao marcar ERRO no log: {e2}")
+        raise
+
+    try:
+        with get_connection() as conn:
+            complete_task(conn, log_id, "Execução concluída.", computer_name=COMPUTADOR_ROBO)
+        print(f"[OS02] U_ROBOT_LOG {log_id} → CONCLUIDO")
+    except Exception as exc:
+        print(f"[OS02] Falha ao marcar CONCLUIDO no log: {exc}")
+
+
+def _run_once_body(log_id: int | None) -> None:
+    print(f"[OS02] _run_once_body iniciado | log_id={log_id}")
     # ------------------------------------------------------------------
     # Pre-phase: mark notes already in NFCAB (not by this RPA) before anything
     # ------------------------------------------------------------------
@@ -321,7 +465,9 @@ def run_once(log_id: int | None = None) -> None:
         print(
             f"\n[OS02] {len(notas_pendentes)} linha(s) pendente(s) para lançar. Iniciando Agro..."
         )
-        _lancar_notas_em_agro(notas_pendentes)
+        relatorio = _lancar_notas_em_agro(notas_pendentes)
+        _imprimir_relatorio(relatorio)
+        notify_conclusao(relatorio)
         print("[OS02] Fase 1 concluída. Próximo ciclo verificará notas restantes.")
         return
 

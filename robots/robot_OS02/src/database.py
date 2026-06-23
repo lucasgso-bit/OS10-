@@ -184,14 +184,20 @@ def inserir_nota(
                 "data_emissao": nota.get("dataEmissao"),
                 "valor_base_icms": _to_float_or_none(nota.get("valorBaseCalculoIcms")),
                 "valor_icms": _to_float_or_none(nota.get("valorIcms")),
-                "valor_base_icms_st": _to_float_or_none(nota.get("valorBaseCalculoIcmsSubstituto")),
+                "valor_base_icms_st": _to_float_or_none(
+                    nota.get("valorBaseCalculoIcmsSubstituto")
+                ),
                 "valor_icms_st": _to_float_or_none(nota.get("valorIcmsSubstituto")),
                 "valor_frete": _to_float_or_none(nota.get("valorFrete")),
                 "valor_seguro": _to_float_or_none(nota.get("valorSeguro")),
                 "valor_desconto": _to_float_or_none(nota.get("valorDesconto")),
-                "valor_outras_despesas": _to_float_or_none(nota.get("valorOutrasDespesasAcessorias")),
+                "valor_outras_despesas": _to_float_or_none(
+                    nota.get("valorOutrasDespesasAcessorias")
+                ),
                 "valor_ipi": _to_float_or_none(nota.get("valorIpi")),
-                "valor_total_produtos": _to_float_or_none(nota.get("valorTotalProdutos")),
+                "valor_total_produtos": _to_float_or_none(
+                    nota.get("valorTotalProdutos")
+                ),
                 "valor_total_nota": _to_float_or_none(nota.get("valorTotalNota")),
                 "valor_total_lote": float(valor_total_lote),
                 "valor_recebido_lote": float(valor_recebido_lote),
@@ -310,6 +316,13 @@ WITH MAPA_ITEM AS (
     UNION ALL
     SELECT 31021010 AS NCM, 77609 AS ITEM, 1556 AS CFOP_DENTRO_UF, 2556 AS CFOP_FORA_UF FROM DUAL
 ),
+NOTASSIEG AS (
+    SELECT
+        TRIM(CHAVEACESSONFE) AS CHAVE,
+        MAX(DTEMISSAO) AS DATA_EMISSAO
+    FROM U_NOTASSIEG
+    GROUP BY TRIM(CHAVEACESSONFE)
+),
 BASE AS (
     SELECT
         UTIN.CODIGO_LOTE,
@@ -319,6 +332,7 @@ BASE AS (
         ITEMAGRO.DESCRICAO,
         UTL.NUMERO_NOTA,
         UTL.SERIE,
+        NOTASSIEG.DATA_EMISSAO,
         UTIN.QUANTIDADE,
         UTIN.VALOR_UNITARIO,
         UTL.CHAVE_ACESSO,
@@ -330,7 +344,7 @@ BASE AS (
                 THEN MAPA_ITEM.CFOP_DENTRO_UF
             ELSE MAPA_ITEM.CFOP_FORA_UF
         END AS CFOP,
-        65 AS NOTACONF,
+        162 AS NOTACONF,
         CASE
             WHEN EXISTS (
                 SELECT 1
@@ -360,6 +374,8 @@ BASE AS (
             ON CIDADE_FILIAL.CIDADE = FILIAL.CIDADE
     INNER JOIN CIDADE CIDADE_CLIENTE
             ON CIDADE_CLIENTE.CIDADE = CONTAMOV.CIDADE
+    LEFT JOIN NOTASSIEG
+            ON NOTASSIEG.CHAVE = TRIM(UTL.CHAVE_ACESSO)
     WHERE UTL.STATUS = 'PENDENTE'
       AND CONCEITOPESSOA.CONCEITO <> 98
 )
@@ -371,6 +387,7 @@ SELECT
     BASE.DESCRICAO,
     BASE.NUMERO_NOTA,
     BASE.SERIE,
+    BASE.DATA_EMISSAO,
     SUM(BASE.QUANTIDADE) AS QUANTIDADE,
     CASE
         WHEN SUM(BASE.QUANTIDADE) = 0 THEN 0
@@ -394,6 +411,7 @@ GROUP BY
     BASE.DESCRICAO,
     BASE.NUMERO_NOTA,
     BASE.SERIE,
+    BASE.DATA_EMISSAO,
     BASE.CHAVE_ACESSO,
     BASE.ESTAB,
     BASE.UF_ESTAB,
@@ -401,6 +419,7 @@ GROUP BY
     BASE.CFOP,
     BASE.NOTACONF
 ORDER BY
+    BASE.ESTAB ASC,
     BASE.CODIGO_LOTE ASC,
     BASE.NUMERO_NOTA ASC,
     BASE.ITEM ASC

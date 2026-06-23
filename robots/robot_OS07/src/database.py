@@ -71,8 +71,9 @@ WHERE
   AND (
         (
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 23
-            AND N.NOTACONF IN ('244', '255', '270', '275', '284', '314',  '285')
+            AND N.NOTACONF IN ( '244', '255', '270', '275', '284', '314',  '285')
             AND N.IEEMITENTE IS NOT NULL
+        --    AND CHAVEACESSO = '31260603088842000135550010000529931974097013'
         )
         OR
         (
@@ -98,7 +99,9 @@ FETCH FIRST 10 ROWS ONLY """
         return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
 
 
-def buscar_notas_reclamadas(connection: oracledb.Connection, computador: str) -> list[dict[str, Any]]:
+def buscar_notas_reclamadas(
+    connection: oracledb.Connection, computador: str
+) -> list[dict[str, Any]]:
     """Retorna os dados completos das notas reivindicadas por esta máquina hoje.
 
     Chamada após claim_next_batch() para obter o dict completo de cada nota
