@@ -76,7 +76,7 @@ PERCENTUAL_MINIMO = Decimal("95")
 _DELAY_ENTRE_ESTABELECIMENTOS = 0.5
 
 # Maximum notes to launch per run — increase after testing.
-LIMITE_NOTAS_TESTE = 2
+LIMITE_NOTAS_TESTE = 10
 
 
 def _fazer_get(
@@ -259,11 +259,17 @@ def _imprimir_relatorio(relatorio: list[dict[str, Any]]) -> None:
     if sucessos:
         print("\nSUCESSO:")
         for r in sucessos:
-            print(f"  Nota {r['nota']} | Estab {r['estab']} | Lote {r['lote']}")
+            print(
+                f"  Nota {r['nota']} | Estab {r['estab']} | Lote {r['lote']} | "
+                f"CFOP {r.get('cfop', '')} | Chave {r.get('chave', '')}"
+            )
     if erros:
         print("\nERROS:")
         for r in erros:
-            print(f"  Nota {r['nota']} | Estab {r['estab']} | Lote {r['lote']} — {r.get('motivo', '')}")
+            print(
+                f"  Nota {r['nota']} | Estab {r['estab']} | Lote {r['lote']} | "
+                f"CFOP {r.get('cfop', '')} | Chave {r.get('chave', '')} — {r.get('motivo', '')}"
+            )
     print(sep)
 
 
@@ -291,7 +297,9 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
             notas_unicas.append(chave)
 
     notas_unicas = notas_unicas[:LIMITE_NOTAS_TESTE]
-    print(f"[OS02] Processando {len(notas_unicas)} nota(s) (limite: {LIMITE_NOTAS_TESTE})")
+    print(
+        f"[OS02] Processando {len(notas_unicas)} nota(s) (limite: {LIMITE_NOTAS_TESTE})"
+    )
 
     kill_agro_process("Agro3C.exe")
     start_agro(AGRO_EXE)
@@ -318,6 +326,8 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
             codigo_lote = int(header["CODIGO_LOTE"])
             numero_nota = str(header["NUMERO_NOTA"]).strip()
             serie = str(header["SERIE"]).strip()
+            cfop = str(header.get("CFOP") or "").strip()
+            chave_acesso = str(header.get("CHAVE_ACESSO") or "").strip()
 
             # Next note same estab? → keep form open; otherwise close it.
             is_last = idx == len(notas_unicas) - 1
@@ -327,24 +337,47 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
             else:
                 close_form = True
 
-            print(f"\n[OS02] Nota {numero_nota} série {serie} | estab {estab} | lote {codigo_lote}")
+            print(
+                f"\n[OS02] Nota {numero_nota} série {serie} | estab {estab} | lote {codigo_lote}"
+            )
 
             # Switch estab only when it changes
             if estab != estab_atual:
                 if not switch_establishment(estab):
                     motivo = f"Falha ao trocar para estab {estab}"
                     print(f"[OS02] {motivo}. Pulando nota.")
-                    relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "ERRO", "motivo": motivo})
+                    relatorio.append(
+                        {
+                            "nota": numero_nota,
+                            "estab": estab,
+                            "lote": codigo_lote,
+                            "cfop": cfop,
+                            "chave": chave_acesso,
+                            "status": "ERRO",
+                            "motivo": motivo,
+                        }
+                    )
                     continue
                 estab_atual = estab
                 is_first_note = True
 
             try:
-                sucesso = lancar_nota_162(header, itens, is_first_note=is_first_note, close_form=close_form)
+                sucesso = lancar_nota_162(
+                    header, itens, is_first_note=is_first_note, close_form=close_form
+                )
 
                 if sucesso:
                     marcar_nota_lancada(conn, numero_nota, serie, codigo_lote)
-                    relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "OK"})
+                    relatorio.append(
+                        {
+                            "nota": numero_nota,
+                            "estab": estab,
+                            "lote": codigo_lote,
+                            "cfop": cfop,
+                            "chave": chave_acesso,
+                            "status": "OK",
+                        }
+                    )
                     print(f"[OS02] Nota {numero_nota} marcada como LANCADA.")
 
                     if not close_form:
@@ -356,8 +389,20 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         is_first_note = True
                 else:
                     motivo = "lancar_nota_162 retornou False"
-                    print(f"[OS02] Falha ao lançar nota {numero_nota}. Tentando recuperar...")
-                    relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "ERRO", "motivo": motivo})
+                    print(
+                        f"[OS02] Falha ao lançar nota {numero_nota}. Tentando recuperar..."
+                    )
+                    relatorio.append(
+                        {
+                            "nota": numero_nota,
+                            "estab": estab,
+                            "lote": codigo_lote,
+                            "cfop": cfop,
+                            "chave": chave_acesso,
+                            "status": "ERRO",
+                            "motivo": motivo,
+                        }
+                    )
                     notify_error(header, motivo)
                     if _recuperar_agro():
                         estab_atual = None
@@ -369,7 +414,17 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
             except Exception as exc:
                 motivo = str(exc)
                 print(f"[OS02] Erro inesperado na nota {numero_nota}: {motivo}")
-                relatorio.append({"nota": numero_nota, "estab": estab, "lote": codigo_lote, "status": "ERRO", "motivo": motivo})
+                relatorio.append(
+                    {
+                        "nota": numero_nota,
+                        "estab": estab,
+                        "lote": codigo_lote,
+                        "cfop": cfop,
+                        "chave": chave_acesso,
+                        "status": "ERRO",
+                        "motivo": motivo,
+                    }
+                )
                 notify_error(header, motivo)
                 try:
                     kill_agro_process("Agro3C.exe")
@@ -437,7 +492,9 @@ def run_once(log_id: int | None = None) -> None:
 
     try:
         with get_connection() as conn:
-            complete_task(conn, log_id, "Execução concluída.", computer_name=COMPUTADOR_ROBO)
+            complete_task(
+                conn, log_id, "Execução concluída.", computer_name=COMPUTADOR_ROBO
+            )
         print(f"[OS02] U_ROBOT_LOG {log_id} → CONCLUIDO")
     except Exception as exc:
         print(f"[OS02] Falha ao marcar CONCLUIDO no log: {exc}")

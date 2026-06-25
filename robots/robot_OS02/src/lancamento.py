@@ -56,7 +56,16 @@ def _fmt_data(valor: Any) -> str:
 def _fmt_valor(valor: Any) -> str:
     """Format a numeric value to 2 decimal places using a comma separator."""
     try:
-        d = Decimal(str(valor)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        d = Decimal(str(valor)).quantize(Decimal("0.000000001"), rounding=ROUND_HALF_UP)
+    except Exception:
+        return str(valor)
+    return str(d).replace(".", ",")
+
+
+def _fmt_quantidade(valor: Any) -> str:
+    """Format a numeric value to 2 decimal places using a comma separator."""
+    try:
+        d = Decimal(str(valor)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
     except Exception:
         return str(valor)
     return str(d).replace(".", ",")
@@ -230,7 +239,7 @@ def lancar_nota_162(
     # ------------------------------------------------------------------
     for idx, item in enumerate(itens):
         codigo_item = str(item.get("ITEM") or "").strip()
-        quantidade = str(item.get("QUANTIDADE") or "").strip()
+        quantidade = _fmt_quantidade(item.get("QUANTIDADE") or "").strip()
         valor_unitario = _fmt_valor(item.get("VALOR_UNITARIO") or "0")
         cfop = str(nota.get("CFOP") or "").strip()
 
@@ -251,7 +260,7 @@ def lancar_nota_162(
         pyautogui.write(quantidade, interval=0.03)
         _sleep(0.3)
         pyautogui.press("enter")
-        _sleep(0.3)
+        _sleep(3)
 
         # c. Unit value (2 dp) → Enter → Enter
         pyautogui.write(valor_unitario, interval=0.03)
@@ -259,13 +268,13 @@ def lancar_nota_162(
         pyautogui.press("enter")
         _sleep(0.3)
         pyautogui.press("enter")
-        _sleep(0.3)
+        _sleep(2)
 
         # d. CFOP → Enter
         pyautogui.write(cfop, interval=0.03)
         _sleep(0.3)
         pyautogui.press("enter")
-        _sleep(0.5)
+        _sleep(1)
 
     # ------------------------------------------------------------------
     # 11. Save → handle popups → close form

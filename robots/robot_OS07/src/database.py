@@ -69,16 +69,37 @@ WHERE
   N.STATUS = 100
   AND C.CONCEITO <> 98
   AND (
+        -- Antes das 23h: configuração principal (exige IEEMITENTE)
         (
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 23
-            AND N.NOTACONF IN ( '244', '255', '270', '275', '284', '314',  '285')
+            AND N.NOTACONF IN ('244', '255', '270', '275', '284', '314', '285')
             AND N.IEEMITENTE IS NOT NULL
-        --    AND CHAVEACESSO = '31260603088842000135550010000529931974097013'
         )
         OR
+        -- Antes das 23h: fallback 225/232 — só entra se a configuração principal não tiver nada
+        (
+            TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 23
+            AND N.NOTACONF IN ('225', '232')
+            AND NOT EXISTS (
+                SELECT 1
+                  FROM OS_RPA_NOTA_07 N2
+                 INNER JOIN CONCEITOPESSOA C2 ON C2.NUMEROCM = N2.NUMEROCM
+                 WHERE N2.STATUS     = 100
+                   AND C2.CONCEITO  <> 98
+                   AND N2.NOTACONF  IN ('244', '255', '270', '275', '284', '314', '285')
+                   AND N2.IEEMITENTE IS NOT NULL
+                   AND NOT EXISTS (
+                         SELECT 1 FROM U_OS07_FILA F2
+                          WHERE F2.CONT_ID     = N2.U_FISCAL_IO_CONT_ID
+                            AND F2.DT_INCLUSAO >= TRUNC(SYSDATE)
+                       )
+            )
+        )
+        OR
+        -- A partir das 23h: todas, incluindo 225 e 232
         (
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) >= 23
-            AND N.NOTACONF IN ('225', '232', '255', '275', '284', '314', '244', '270', '285')
+            AND N.NOTACONF IN ('225', '232', '244', '255', '270', '275', '284', '285', '314')
         )
       )
   AND NOT EXISTS (

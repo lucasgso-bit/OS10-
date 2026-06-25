@@ -348,6 +348,8 @@ def _build_html_conclusao(relatorio: list[dict[str, Any]], computador: str) -> s
             f"<td style='{_TD}'>{html.escape(str(r.get('nota', '')))}</td>"
             f"<td style='{_TD}'>{html.escape(str(r.get('estab', '')))}</td>"
             f"<td style='{_TD}'>{html.escape(str(r.get('lote', '')))}</td>"
+            f"<td style='{_TD}'>{html.escape(str(r.get('cfop', '')))}</td>"
+            f"<td style='{_TD};font-size:11px'>{html.escape(str(r.get('chave', '')))}</td>"
             f"<td style='{_TD};color:{cor_status};font-weight:bold'>{status_texto}</td>"
             f"<td style='{_TD}'>{motivo}</td>"
             f"</tr>"
@@ -388,6 +390,8 @@ def _build_html_conclusao(relatorio: list[dict[str, Any]], computador: str) -> s
         <th style="{_TH}">Nota</th>
         <th style="{_TH}">Estab</th>
         <th style="{_TH}">Lote</th>
+        <th style="{_TH}">CFOP</th>
+        <th style="{_TH}">Chave de Acesso</th>
         <th style="{_TH}">Status</th>
         <th style="{_TH}">Motivo</th>
       </tr>
