@@ -41,7 +41,6 @@ from robots.robot_OS02.src.agro_alerts import (
 )
 from robots.robot_OS02.src.agro_app import kill_agro_process, start_agro
 from robots.robot_OS02.src.agro_estab import (
-    focus_window,
     switch_establishment,
     wait_window_startswith,
 )
@@ -55,6 +54,7 @@ from robots.robot_OS02.src.database import (
     inserir_itens_nota,
     inserir_nota,
     marcar_nota_lancada,
+    tem_notas_pendentes,
     upsert_status_lote,
 )
 from robots.robot_OS02.src.lancamento import lancar_nota_162
@@ -66,8 +66,8 @@ from robots.robot_OS02.src.notifier import (
 
 CODIGO_TIPO_CARTAO = 4
 
-DATA_INICIAL = "2026-04-15"
-DATA_FINAL = "2026-06-30"
+DATA_INICIAL = "2026-05-15"
+DATA_FINAL = date.today().strftime("%Y-%m-%d")
 
 PERCENTUAL_MINIMO = Decimal("95")
 
@@ -75,8 +75,8 @@ PERCENTUAL_MINIMO = Decimal("95")
 # 0.5 s is conservative; lower only if the API proves more permissive.
 _DELAY_ENTRE_ESTABELECIMENTOS = 0.5
 
-# Maximum notes to launch per run — increase after testing.
-LIMITE_NOTAS_TESTE = 10
+# Notes processed per batch — errors from a batch are deferred to the end.
+TAMANHO_LOTE = 50
 
 
 def _fazer_get(
@@ -221,31 +221,27 @@ def _converter_decimal(valor: Any) -> Decimal:
     return Decimal(texto)
 
 
-def _recuperar_agro() -> bool:
-    """Close stray windows and return focus to AGRO-AG.
+def _reiniciar_agro_pos_erro() -> bool:
+    """Terminate Agro completely and restart from scratch after any error.
 
-    Tries Escape + Ctrl+F4 first; falls back to a full Agro restart only
-    if AGRO-AG is no longer reachable.  Returns True when AGRO-AG is ready.
+    Always kills the process — never attempts a soft recovery — so the next
+    note starts from a clean state.  Returns True when AGRO-AG is ready.
     """
-    for _ in range(3):
-        pyautogui.press("escape")
-        time.sleep(0.3)
-    for _ in range(3):
-        pyautogui.hotkey("ctrl", "f4")
-        time.sleep(0.5)
-
-    if wait_window_startswith("AGRO-AG", timeout_seconds=5):
-        focus_window("AGRO-AG")
-        return True
-
-    print("[OS02] AGRO-AG não encontrado — reiniciando Agro...")
-    kill_agro_process("Agro3C.exe")
+    print("[OS02] Fechando Agro após erro...")
+    try:
+        kill_agro_process("Agro3C.exe")
+    except Exception as e:
+        print(f"[OS02] Aviso ao fechar Agro: {e}")
     start_agro(AGRO_EXE)
     time.sleep(5)
     login_agro()
     confirm_attention_popup()
     confirm_establishment_selection()
-    return wait_window_startswith("AGRO-AG", timeout_seconds=15)
+    if wait_window_startswith("AGRO-AG", timeout_seconds=15):
+        print("[OS02] Agro reiniciado com sucesso.")
+        return True
+    print("[OS02] Agro não inicializou após reinício.")
+    return False
 
 
 def _imprimir_relatorio(relatorio: list[dict[str, Any]]) -> None:
@@ -296,10 +292,7 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
             vistas.add(chave)
             notas_unicas.append(chave)
 
-    notas_unicas = notas_unicas[:LIMITE_NOTAS_TESTE]
-    print(
-        f"[OS02] Processando {len(notas_unicas)} nota(s) (limite: {LIMITE_NOTAS_TESTE})"
-    )
+    print(f"[OS02] Processando {len(notas_unicas)} nota(s)")
 
     kill_agro_process("Agro3C.exe")
     start_agro(AGRO_EXE)
@@ -349,6 +342,7 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     relatorio.append(
                         {
                             "nota": numero_nota,
+                            "serie": serie,
                             "estab": estab,
                             "lote": codigo_lote,
                             "cfop": cfop,
@@ -371,6 +365,7 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     relatorio.append(
                         {
                             "nota": numero_nota,
+                            "serie": serie,
                             "estab": estab,
                             "lote": codigo_lote,
                             "cfop": cfop,
@@ -390,11 +385,13 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 else:
                     motivo = "lancar_nota_162 retornou False"
                     print(
-                        f"[OS02] Falha ao lançar nota {numero_nota}. Tentando recuperar..."
+                        f"[OS02] Falha ao lançar nota {numero_nota}. "
+                        "Fechando Agro e pulando para próxima nota..."
                     )
                     relatorio.append(
                         {
                             "nota": numero_nota,
+                            "serie": serie,
                             "estab": estab,
                             "lote": codigo_lote,
                             "cfop": cfop,
@@ -404,12 +401,11 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         }
                     )
                     notify_error(header, motivo)
-                    if _recuperar_agro():
-                        estab_atual = None
-                        is_first_note = True
-                    else:
-                        print("[OS02] Recuperação falhou. Abortando lançamentos.")
+                    if not _reiniciar_agro_pos_erro():
+                        print("[OS02] Não foi possível reiniciar Agro. Abortando.")
                         break
+                    estab_atual = None
+                    is_first_note = True
 
             except Exception as exc:
                 motivo = str(exc)
@@ -417,6 +413,7 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 relatorio.append(
                     {
                         "nota": numero_nota,
+                        "serie": serie,
                         "estab": estab,
                         "lote": codigo_lote,
                         "cfop": cfop,
@@ -426,18 +423,8 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     }
                 )
                 notify_error(header, motivo)
-                try:
-                    kill_agro_process("Agro3C.exe")
-                    start_agro(AGRO_EXE)
-                    time.sleep(5)
-                    login_agro()
-                    confirm_attention_popup()
-                    confirm_establishment_selection()
-                    if not wait_window_startswith("AGRO-AG", timeout_seconds=15):
-                        print("[OS02] Agro não recuperou. Abortando lançamentos.")
-                        break
-                except Exception as restart_exc:
-                    print(f"[OS02] Falha ao reiniciar Agro: {restart_exc}. Abortando.")
+                if not _reiniciar_agro_pos_erro():
+                    print("[OS02] Não foi possível reiniciar Agro. Abortando.")
                     break
                 estab_atual = None
                 is_first_note = True
@@ -445,6 +432,142 @@ def _lancar_notas_em_agro(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     kill_agro_process("Agro3C.exe")
     print("[OS02] Agro encerrado.")
     return relatorio
+
+
+def _chave_nota(linha: dict[str, Any]) -> str:
+    return f"{linha['ESTAB']}|{linha['CODIGO_LOTE']}|{linha['NUMERO_NOTA']}|{linha['SERIE']}"
+
+
+def _processar_todas_notas() -> None:
+    """Process all pending notes in batches of TAMANHO_LOTE grouped by establishment.
+
+    Notes are grouped by ESTAB so each batch contains only one establishment —
+    Agro never switches estab within a batch. An email is sent after each batch
+    of up to TAMANHO_LOTE notes; a grand summary is sent at the very end.
+    Non-error notes are processed first; errors are retried in the next pass.
+    """
+    chaves_com_erro: set[str] = set()
+    relatorio_global: list[dict[str, Any]] = []
+
+    while True:
+        with get_os20_connection() as conn:
+            todas_linhas = buscar_notas_para_lancar(conn)
+
+        if not todas_linhas:
+            with get_os20_connection() as _conn:
+                with _conn.cursor() as _c:
+                    _c.execute("SELECT COUNT(*) FROM U_TICKETLOG_NOTAS_LOTE WHERE STATUS='PENDENTE'")
+                    print(f"[OS02] DEBUG raw PENDENTE={_c.fetchone()[0]}")
+                    _c.execute("""SELECT COUNT(DISTINCT n.ID) FROM U_TICKETLOG_NOTAS_LOTE n
+                        INNER JOIN U_TICKETLOG_ITENS_NOTA i ON i.NOTA_ID=n.ID
+                        WHERE n.STATUS='PENDENTE'""")
+                    print(f"[OS02] DEBUG com itens={_c.fetchone()[0]}")
+                    _c.execute("""SELECT COUNT(DISTINCT n.ID) FROM U_TICKETLOG_NOTAS_LOTE n
+                        INNER JOIN U_TICKETLOG_ITENS_NOTA i ON i.NOTA_ID=n.ID
+                        WHERE n.STATUS='PENDENTE'
+                        AND i.NCM IN ('27101259','27101921','22071090','31021010')""")
+                    print(f"[OS02] DEBUG NCM mapeado={_c.fetchone()[0]}")
+                    _c.execute("""SELECT COUNT(DISTINCT n.ID) FROM U_TICKETLOG_NOTAS_LOTE n
+                        INNER JOIN U_TICKETLOG_ITENS_NOTA i ON i.NOTA_ID=n.ID
+                        INNER JOIN U_NOTASSIEG_ITENS s ON TRIM(s.CHAVE)=TRIM(n.CHAVE_ACESSO) AND s.NCM=i.NCM
+                        WHERE n.STATUS='PENDENTE'""")
+                    print(f"[OS02] DEBUG match SIEG={_c.fetchone()[0]}")
+                    _c.execute("""SELECT COUNT(DISTINCT n.ID) FROM U_TICKETLOG_NOTAS_LOTE n
+                        INNER JOIN CONTAMOV c ON c.INSCESTAD=n.INSCRICAO_ESTADUAL
+                        WHERE n.STATUS='PENDENTE'""")
+                    print(f"[OS02] DEBUG match CONTAMOV={_c.fetchone()[0]}")
+                    _c.execute("""SELECT COUNT(DISTINCT n.ID) FROM U_TICKETLOG_NOTAS_LOTE n
+                        INNER JOIN FILIAL f ON f.CNPJ=n.CNPJ
+                        WHERE n.STATUS='PENDENTE'""")
+                    print(f"[OS02] DEBUG match FILIAL={_c.fetchone()[0]}")
+                    _c.execute("""SELECT COUNT(DISTINCT n.ID) FROM U_TICKETLOG_NOTAS_LOTE n
+                        INNER JOIN FILIAL f ON f.CNPJ=n.CNPJ
+                        INNER JOIN CONTAMOV c ON c.INSCESTAD=n.INSCRICAO_ESTADUAL
+                        WHERE n.STATUS='PENDENTE'""")
+                    print(f"[OS02] DEBUG FILIAL+CONTAMOV combinado={_c.fetchone()[0]}")
+                    _c.execute("""SELECT n.CNPJ, n.INSCRICAO_ESTADUAL, COUNT(*) AS QTD
+                        FROM U_TICKETLOG_NOTAS_LOTE n WHERE n.STATUS='PENDENTE'
+                        GROUP BY n.CNPJ, n.INSCRICAO_ESTADUAL
+                        ORDER BY QTD DESC FETCH FIRST 5 ROWS ONLY""")
+                    print("[OS02] DEBUG top 5 CNPJ/INSCESTAD das notas pendentes:")
+                    for r in _c.fetchall():
+                        print(f"  CNPJ={r[0]} | IE={r[1]} | QTD={r[2]}")
+            print("[OS02] Nenhuma nota pendente. Fase 1 concluída.")
+            break
+
+        itens_por_chave: dict[str, list[dict[str, Any]]] = {}
+        ordem: list[str] = []
+        vistas: set[str] = set()
+        for linha in todas_linhas:
+            chave = _chave_nota(linha)
+            itens_por_chave.setdefault(chave, []).append(linha)
+            if chave not in vistas:
+                vistas.add(chave)
+                ordem.append(chave)
+
+        sem_erro = [c for c in ordem if c not in chaves_com_erro]
+        com_erro = [c for c in ordem if c in chaves_com_erro]
+        fila = sem_erro + com_erro
+
+        # Group by ESTAB preserving intra-estab order (DB returns ESTAB ASC)
+        fila_por_estab: dict[int, list[str]] = {}
+        for c in fila:
+            estab = int(itens_por_chave[c][0]["ESTAB"])
+            fila_por_estab.setdefault(estab, []).append(c)
+
+        total = len(fila)
+        print(
+            f"\n[OS02] Passagem: {total} nota(s) | "
+            f"{len(sem_erro)} normais | {len(com_erro)} retry de erro | "
+            f"{len(fila_por_estab)} estab(s)"
+        )
+
+        novos_erros: set[str] = set()
+        sucessos_desta: set[str] = set()
+        processadas = 0
+
+        for estab, chaves_estab in fila_por_estab.items():
+            n_estab = len(chaves_estab)
+            num_lotes_estab = (n_estab + TAMANHO_LOTE - 1) // TAMANHO_LOTE
+            print(f"\n[OS02] Estab {estab}: {n_estab} nota(s) | {num_lotes_estab} lote(s)")
+
+            for i, inicio in enumerate(range(0, n_estab, TAMANHO_LOTE), 1):
+                lote_chaves = chaves_estab[inicio : inicio + TAMANHO_LOTE]
+                linhas_lote: list[dict[str, Any]] = []
+                for c in lote_chaves:
+                    linhas_lote.extend(itens_por_chave[c])
+
+                print(
+                    f"\n[OS02] Estab {estab} — Lote {i}/{num_lotes_estab} | "
+                    f"notas {inicio + 1}–{min(inicio + TAMANHO_LOTE, n_estab)} de {n_estab}"
+                )
+                relatorio_lote = _lancar_notas_em_agro(linhas_lote)
+                _imprimir_relatorio(relatorio_lote)
+                relatorio_global.extend(relatorio_lote)
+
+                for r in relatorio_lote:
+                    chave_r = f"{r['estab']}|{r['lote']}|{r['nota']}|{r['serie']}"
+                    if r["status"] == "ERRO":
+                        novos_erros.add(chave_r)
+                    else:
+                        sucessos_desta.add(chave_r)
+
+                processadas += len(lote_chaves)
+                print(f"[OS02] Progresso: {processadas}/{total}")
+
+                if relatorio_lote:
+                    notify_conclusao(relatorio_lote)
+
+        chaves_com_erro -= sucessos_desta
+        chaves_com_erro |= novos_erros
+
+        if chaves_com_erro:
+            print(
+                f"[OS02] {len(chaves_com_erro)} nota(s) com erro persistente. "
+                "Próxima passagem tentará novamente."
+            )
+        else:
+            print("[OS02] Passagem concluída sem erros pendentes.")
 
 
 def run_once(log_id: int | None = None) -> None:
@@ -503,29 +626,30 @@ def run_once(log_id: int | None = None) -> None:
 def _run_once_body(log_id: int | None) -> None:
     print(f"[OS02] _run_once_body iniciado | log_id={log_id}")
     # ------------------------------------------------------------------
-    # Pre-phase: mark notes already in NFCAB (not by this RPA) before anything
+    # Phase 1: launch pending notes in Agro (gate check first)
     # ------------------------------------------------------------------
     with get_os20_connection() as conn:
-        atualizadas = atualizar_notas_lancadas_diferente(conn)
-        if atualizadas:
-            print(
-                f"[OS02] {atualizadas} nota(s) marcada(s) como LANCADO DIFERENTE RPA.OS02."
+        with conn.cursor() as _cur:
+            _cur.execute(
+                "SELECT COUNT(*), MIN(STATUS), MAX(STATUS) FROM U_TICKETLOG_NOTAS_LOTE WHERE STATUS = 'PENDENTE'"
             )
+            _row = _cur.fetchone()
+            print(f"[OS02] DEBUG banco: COUNT={_row[0]} | MIN_STATUS={_row[1]} | MAX_STATUS={_row[2]}")
+        ha_pendentes = tem_notas_pendentes(conn)
+        print(f"[OS02] DEBUG tem_notas_pendentes={ha_pendentes}")
 
-    # ------------------------------------------------------------------
-    # Phase 1: launch pending notes in Agro (first batch first)
-    # ------------------------------------------------------------------
-    with get_os20_connection() as conn:
-        notas_pendentes = buscar_notas_para_lancar(conn)
-
-    if notas_pendentes:
-        print(
-            f"\n[OS02] {len(notas_pendentes)} linha(s) pendente(s) para lançar. Iniciando Agro..."
-        )
-        relatorio = _lancar_notas_em_agro(notas_pendentes)
-        _imprimir_relatorio(relatorio)
-        notify_conclusao(relatorio)
-        print("[OS02] Fase 1 concluída. Próximo ciclo verificará notas restantes.")
+    if ha_pendentes:
+        print("\n[OS02] Notas pendentes encontradas em U_TICKETLOG_NOTAS_LOTE. Iniciando Fase 1...")
+        # Mark notes already launched by other means AFTER the gate check,
+        # so they do not interfere with the pending-note detection above.
+        with get_os20_connection() as conn:
+            atualizadas = atualizar_notas_lancadas_diferente(conn)
+            if atualizadas:
+                print(
+                    f"[OS02] {atualizadas} nota(s) marcada(s) como LANCADO DIFERENTE RPA.OS02."
+                )
+        _processar_todas_notas()
+        print("[OS02] Fase 1 concluída.")
         return
 
     # ------------------------------------------------------------------

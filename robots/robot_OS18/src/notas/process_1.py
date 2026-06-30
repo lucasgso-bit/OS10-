@@ -5,8 +5,8 @@ and then processing account adjustments individually by supplier.
 
 Developed by: João Netto
 Updated by: João Netto
-Last Modified: 2026-06-15
-Version: 1.6.1
+Last Modified: 2026-06-22
+Version: 1.6.4
 """
 
 from __future__ import annotations
@@ -33,16 +33,17 @@ ACCOUNT_ADJUSTMENT_TITLE = "Acerto Individual de Conta Movimento"
 DUPLICATES_PAYMENT_TITLE = "Pagamento com Duplicatas"
 ACCOUNT_MOVEMENT_TITLE = "Conta Movimento - Lançamento"
 RECEIPT_WINDOW_TITLE = "Recibo"
-PAYMENT_FAILURE_WINDOW_TITLE = "Não foi possível fazer a Baixa"
 CONCEITO_BLOCKED_WINDOW_TITLE = "Conceito - Emissão bloqueada!"
 FILTER_INVOICE_WINDOW_TITLE = "Filtro de Faturas"
 
+# Para rodar geral, deixe vazio: TEST_FATURA_FIXA = ""
 TEST_FATURA_FIXA = ""
 
 ACERTO_FORNECEDOR_FIELD_CLASS = "TVsNumRight"
 ACERTO_FORNECEDOR_FIELD_INDEX = 12
-PAYMENT_ESTAB_FIELD_CLASS = "TVsNumRight"
-PAYMENT_ESTAB_FIELD_INDEX = 4
+
+TODOS_ESTAB_FIELD_CLASS = "TVsRadioButton"
+TODOS_ESTAB_FIELD_INDEX = 2
 
 INTERNAL_WINDOW_TITLES = [
     PAYMENT_SCREEN_TITLE,
@@ -50,7 +51,6 @@ INTERNAL_WINDOW_TITLES = [
     DUPLICATES_PAYMENT_TITLE,
     ACCOUNT_MOVEMENT_TITLE,
     RECEIPT_WINDOW_TITLE,
-    PAYMENT_FAILURE_WINDOW_TITLE,
     "Pagamentos",
     "Exclusões",
     "Títulos",
@@ -62,26 +62,173 @@ INTERNAL_WINDOW_TITLES = [
 ]
 
 
-def close_attention_after_payment_failure_if_open(
-    timeout_seconds: int = 5,
+def handle_post_alt_a_popups_until_finished(
+    timeout_seconds: int = 300,
+    quiet_seconds: int = 30,
+    interval: float = 0.5,
+    fornecedor: str = "",
+    empresa: str = "",
 ) -> bool:
-    print("Verificando Atenção após falhas de baixa...")
+    print("Aguardando finalização dos popups após ALT + A...")
 
     start = time.time()
+    last_popup_time = time.time()
+
+    conceito_blocked_count = 0
+    conceito_count = 0
+    attention_count = 0
 
     while time.time() - start < timeout_seconds:
+        conceito_blocked_window = find_window_by_prefix(CONCEITO_BLOCKED_WINDOW_TITLE)
+
+        if conceito_blocked_window:
+            conceito_blocked_count += 1
+
+            print(
+                "Popup Conceito - Emissão bloqueada detectado "
+                f"({conceito_blocked_count}). Confirmando com ENTER..."
+            )
+
+            try:
+                conceito_blocked_window.activate()
+                time.sleep(0.4)
+
+                pyautogui.press("enter")
+                time.sleep(0.8)
+
+                last_popup_time = time.time()
+                continue
+
+            except Exception as error:
+                print(f"Erro ao confirmar Conceito - Emissão bloqueada: {error}")
+                return False
+
+        conceito_window = find_window_by_prefix(CONCEITO_WINDOW_TITLE)
+
+        if conceito_window:
+            conceito_count += 1
+
+            print(
+                "Popup Conceito detectado "
+                f"({conceito_count}). Confirmando com ENTER..."
+            )
+
+            try:
+                conceito_window.activate()
+                time.sleep(0.4)
+
+                pyautogui.press("enter")
+                time.sleep(0.8)
+
+                last_popup_time = time.time()
+                continue
+
+            except Exception as error:
+                print(f"Erro ao confirmar popup Conceito: {error}")
+                return False
+
         attention_window = find_window_by_prefix(ATTENTION_WINDOW_TITLE)
 
-        if not attention_window:
+        if attention_window:
+            attention_count += 1
+
+            print(
+                "Popup Atenção após ALT + A detectado "
+                f"({attention_count}). Confirmando com ENTER..."
+            )
+
+            try:
+                attention_window.activate()
+                time.sleep(0.4)
+
+                pyautogui.press("enter")
+                time.sleep(0.8)
+
+                last_popup_time = time.time()
+                continue
+
+            except Exception as error:
+                print(f"Erro ao confirmar popup Atenção após ALT + A: {error}")
+                return False
+
+        if time.time() - last_popup_time >= quiet_seconds:
+            print(
+                "Nenhum popup após ALT + A apareceu nos últimos "
+                f"{quiet_seconds} segundos."
+            )
+            print(
+                "Pós-ALT+A finalizado. "
+                f"Conceitos bloqueados: {conceito_blocked_count}. "
+                f"Conceitos: {conceito_count}. "
+                f"Atenções: {attention_count}."
+            )
+            return True
+
+        time.sleep(interval)
+
+    notify_processing_failure(
+        error_name="Tempo limite após ALT+A",
+        error_description=(
+            "O processo ficou aguardando os popups após ALT + A, "
+            "mas o tempo limite foi atingido. "
+            f"Conceitos bloqueados: {conceito_blocked_count}. "
+            f"Conceitos: {conceito_count}. "
+            f"Atenções: {attention_count}."
+        ),
+        fornecedor=fornecedor,
+        empresa=empresa,
+    )
+
+    print_open_windows()
+    return False
+
+
+def close_at_end_of_table_error_if_open(timeout_seconds: int = 5) -> bool:
+    print("Verificando popup 'Erro: %s / At end of table'...")
+
+    start = time.time()
+
+    while time.time() - start < timeout_seconds:
+        window = find_window_by_prefix(AT_END_OF_TABLE_WINDOW_TITLE)
+
+        if window:
+            print("Popup 'Erro: %s' encontrado. Confirmando com ENTER...")
+
+            try:
+                window.activate()
+                time.sleep(0.5)
+
+                pyautogui.press("enter")
+                time.sleep(1)
+
+                return True
+
+            except Exception as error:
+                print(f"Erro ao fechar popup 'Erro: %s': {error}")
+                return False
+
+        time.sleep(0.5)
+
+    print("Popup 'Erro: %s / At end of table' não apareceu.")
+    return False
+
+
+def close_filter_popup_if_open(timeout_seconds: int = 90) -> bool:
+    print("Verificando popup Filtro de Faturas...")
+
+    start = time.time()
+
+    while time.time() - start < timeout_seconds:
+        window = find_window_by_prefix(FILTER_INVOICE_WINDOW_TITLE)
+
+        if not window:
             time.sleep(0.5)
             continue
 
-        print(
-            "Tela Atenção encontrada após falhas de baixa. " "Confirmando com ENTER..."
-        )
+        print("Filtro de Faturas encontrado. Confirmando com ENTER...")
 
         try:
-            attention_window.activate()
+            window.activate()
             time.sleep(0.5)
 
             pyautogui.press("enter")
@@ -90,153 +237,86 @@ def close_attention_after_payment_failure_if_open(
             return True
 
         except Exception as error:
-            print(f"Erro ao fechar Atenção após falhas de baixa: {error}")
+            print(f"Erro ao fechar Filtro de Faturas: {error}")
             return False
 
-    print("Nenhuma tela Atenção apareceu após falhas de baixa.")
+    print("Popup Filtro de Faturas não apareceu.")
     return False
 
 
-def close_no_marked_payment_error_if_open(
-    timeout_seconds: int = 5,
-) -> bool:
-    print(
-        "Verificando erro de nenhum título marcado " "ou valor de pagamento zerado..."
-    )
+def close_post_receipt_filter_popups(
+    fornecedor: str = "",
+    empresa: str = "",
+    timeout_seconds: int = 90,
+) -> None:
+    """Close filter and optional error popups after account movement saving."""
+    print("Verificando popups após salvamento...")
 
-    start = time.time()
+    close_at_end_of_table_error_if_open(timeout_seconds=5)
 
-    while time.time() - start < timeout_seconds:
-        error_window = find_window_by_prefix(ERROR_WINDOW_TITLE)
+    filter_closed = close_filter_popup_if_open(timeout_seconds=timeout_seconds)
 
-        if not error_window:
-            time.sleep(0.5)
-            continue
+    if filter_closed:
+        print("Filtro de Faturas pós-salvamento fechado.")
 
-        print("Janela Erro encontrada após salvamento. " "Confirmando com ENTER...")
+        close_at_end_of_table_error_if_open(timeout_seconds=5)
 
-        try:
-            error_window.activate()
-            time.sleep(0.5)
+        if wait_window_startswith(ERROR_WINDOW_TITLE, timeout_seconds=3):
+            print("Janela Erro pós-salvamento detectada.")
+            print("Confirmando com ENTER sem notificar erro...")
 
             pyautogui.press("enter")
             time.sleep(1)
 
-            return True
+        return
 
-        except Exception as error:
-            print(
-                "Erro ao fechar janela de nenhum título marcado "
-                f"ou valor zerado: {error}"
-            )
-            return False
+    close_at_end_of_table_error_if_open(timeout_seconds=5)
 
-    print(
-        "Erro de nenhum título marcado ou valor zerado " "não apareceu após salvamento."
-    )
-
-    return False
+    print("Nenhum popup de Filtro de Faturas apareceu após o salvamento.")
 
 
-def close_optional_receipt_windows(
-    timeout_seconds: int = 5,
-    max_attempts: int = 5,
-) -> int:
-    print("Verificando se a tela Recibo apareceu...")
+def get_unique_supplier_notes(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Get one note per supplier and company preserving the original order."""
+    chaves: set[tuple[str, str]] = set()
+    notas_unicas: list[dict[str, Any]] = []
 
-    total_closed = 0
-    start = time.time()
+    for nota in notas:
+        fornecedor = str(nota.get("FORNECEDOR") or "").strip()
+        empresa = str(nota.get("EMPRESA") or "").strip()
 
-    while time.time() - start < timeout_seconds:
-        receipt_window = find_window_by_prefix(RECEIPT_WINDOW_TITLE)
-
-        if not receipt_window:
-            time.sleep(0.5)
+        if not fornecedor or not empresa:
             continue
 
-        break
+        chave = (fornecedor, empresa)
 
-    for attempt in range(1, max_attempts + 1):
-        receipt_window = find_window_by_prefix(RECEIPT_WINDOW_TITLE)
+        if chave in chaves:
+            continue
 
-        if not receipt_window:
-            break
+        chaves.add(chave)
+        notas_unicas.append(nota)
 
-        total_closed += 1
-
-        print("Tela Recibo encontrada. " f"Fechando ({attempt}/{max_attempts})...")
-
-        try:
-            receipt_window.activate()
-            time.sleep(0.5)
-
-            pyautogui.hotkey("alt", "f4")
-            time.sleep(1)
-
-        except Exception as error:
-            print(f"Erro ao fechar tela Recibo: {error}")
-            break
-
-    if total_closed:
-        print(f"Tela(s) Recibo fechada(s): {total_closed}.")
-    else:
-        print("Tela Recibo não apareceu. Seguindo sem Recibo.")
-
-    return total_closed
+    return notas_unicas
 
 
-def click_payment_estab_field() -> bool:
-    try:
-        import os
-        from pathlib import Path
+def handle_conceito_blocked_after_alt_a(timeout_seconds: int = 1) -> bool:
+    """Confirm the blocked emission concept popup after ALT+A when it appears."""
+    print("Verificando popup Conceito - Emissão bloqueada após ALT + A...")
 
-        import comtypes.client
-
-        cache_dir = Path(os.environ["APPDATA"]) / "comtypes_cache"
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        comtypes.client.gen_dir = str(cache_dir)
-
-        from pywinauto import Application
-
-        app = Application(backend="win32").connect(
-            title_re=f".*{PAYMENT_SCREEN_TITLE}.*"
-        )
-
-        janela = app.window(title_re=f".*{PAYMENT_SCREEN_TITLE}.*")
-        janela.wait("visible", timeout=10)
-        janela.set_focus()
-        time.sleep(0.5)
-
-        fields = [
-            control
-            for control in janela.descendants()
-            if control.class_name() == PAYMENT_ESTAB_FIELD_CLASS
-        ]
-
-        print(
-            "Campos encontrados na tela de pagamentos "
-            f"com classe {PAYMENT_ESTAB_FIELD_CLASS}: {len(fields)}"
-        )
-
-        if PAYMENT_ESTAB_FIELD_INDEX >= len(fields):
-            print(
-                f"Índice inválido: {PAYMENT_ESTAB_FIELD_INDEX}. "
-                f"Campos encontrados: {len(fields)}"
-            )
-            return False
-
-        campo_estab = fields[PAYMENT_ESTAB_FIELD_INDEX]
-        campo_estab.click_input()
-        time.sleep(0.5)
-
-        return True
-
-    except Exception as error:
-        print(f"Erro ao clicar no campo ESTAB da tela de pagamentos: {error}")
+    if not wait_window_startswith(CONCEITO_BLOCKED_WINDOW_TITLE, timeout_seconds):
+        print("Popup Conceito - Emissão bloqueada não apareceu.")
         return False
+
+    print("Popup Conceito - Emissão bloqueada detectado.")
+    print("Confirmando com ENTER e seguindo o processo...")
+
+    pyautogui.press("enter")
+    time.sleep(1)
+
+    return True
 
 
 def print_open_windows() -> None:
+    """Print all open windows for debugging."""
     print("\n===== JANELAS ABERTAS =====")
 
     for window in gw.getAllWindows():
@@ -249,6 +329,7 @@ def print_open_windows() -> None:
 
 
 def focus_window(title_start: str, timeout_seconds: int = 10) -> bool:
+    """Focus a window by title prefix."""
     start = time.time()
 
     while time.time() - start < timeout_seconds:
@@ -271,6 +352,7 @@ def focus_window(title_start: str, timeout_seconds: int = 10) -> bool:
 
 
 def find_window_by_prefix(title_start: str):
+    """Find a visible window by title prefix."""
     for window in gw.getAllWindows():
         title = window.title.strip()
 
@@ -280,7 +362,8 @@ def find_window_by_prefix(title_start: str):
     return None
 
 
-def handle_filter_success_popup(timeout_seconds: int = 60) -> bool:
+def handle_filter_success_popup(timeout_seconds: int = 120) -> bool:
+    """Confirm the invoice filter success popup when it appears."""
     print("Aguardando janela 'Filtro de Faturas'...")
 
     start = time.time()
@@ -316,6 +399,7 @@ def handle_filter_success_popup(timeout_seconds: int = 60) -> bool:
 def normalize_notas(
     notas: list[dict[str, Any]] | dict[str, Any],
 ) -> list[dict[str, Any]]:
+    """Normalize process input to a list of note dictionaries."""
     if isinstance(notas, dict):
         return [notas]
 
@@ -323,6 +407,7 @@ def normalize_notas(
 
 
 def get_unique_empresas(notas: list[dict[str, Any]]) -> list[str]:
+    """Get unique EMPRESA values preserving the original order."""
     empresas: list[str] = []
 
     for nota in notas:
@@ -334,29 +419,8 @@ def get_unique_empresas(notas: list[dict[str, Any]]) -> list[str]:
     return empresas
 
 
-def get_unique_supplier_notes(notas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    chaves: set[tuple[str, str]] = set()
-    notas_unicas: list[dict[str, Any]] = []
-
-    for nota in notas:
-        fornecedor = str(nota.get("FORNECEDOR") or "").strip()
-        empresa = str(nota.get("EMPRESA") or "").strip()
-
-        if not fornecedor or not empresa:
-            continue
-
-        chave = (fornecedor, empresa)
-
-        if chave in chaves:
-            continue
-
-        chaves.add(chave)
-        notas_unicas.append(nota)
-
-    return notas_unicas
-
-
 def get_today_yyyymmdd_empresa(empresa: str | int) -> str:
+    """Return today's date as YYYYMMDD plus the three-digit company code."""
     if TEST_FATURA_FIXA:
         return TEST_FATURA_FIXA
 
@@ -371,6 +435,7 @@ def notify_screen_not_opened(
     fornecedor: str = "",
     empresa: str = "",
 ) -> None:
+    """Notify when an expected screen does not open."""
     notify_error_before_close(
         error_name="Tela não abriu",
         error_description=f"A tela esperada não abriu: {screen_name}.",
@@ -385,6 +450,7 @@ def notify_processing_failure(
     fornecedor: str = "",
     empresa: str = "",
 ) -> None:
+    """Notify a processing failure with screenshot."""
     notify_error_before_close(
         error_name=error_name,
         error_description=error_description,
@@ -394,6 +460,7 @@ def notify_processing_failure(
 
 
 def close_popup_if_open(title_start: str) -> bool:
+    """Close a popup window with Enter if it is open."""
     for window in gw.getAllWindows():
         title = window.title.strip()
 
@@ -417,37 +484,8 @@ def close_popup_if_open(title_start: str) -> bool:
     return False
 
 
-def close_at_end_of_table_error_if_open(timeout_seconds: int = 5) -> bool:
-    print("Verificando popup 'Erro: %s / At end of table'...")
-
-    start = time.time()
-
-    while time.time() - start < timeout_seconds:
-        window = find_window_by_prefix(AT_END_OF_TABLE_WINDOW_TITLE)
-
-        if window:
-            print("Popup 'Erro: %s' encontrado. Confirmando com ENTER...")
-
-            try:
-                window.activate()
-                time.sleep(0.5)
-
-                pyautogui.press("enter")
-                time.sleep(1)
-
-                return True
-
-            except Exception as error:
-                print(f"Erro ao fechar popup 'Erro: %s': {error}")
-                return False
-
-        time.sleep(0.5)
-
-    print("Popup 'Erro: %s / At end of table' não apareceu.")
-    return False
-
-
 def close_known_internal_window_if_open() -> bool:
+    """Close known internal FinAgro windows if any are open."""
     for window in gw.getAllWindows():
         title = window.title.strip()
 
@@ -476,6 +514,7 @@ def close_known_internal_window_if_open() -> bool:
 
 
 def close_payment_screen_if_open() -> None:
+    """Close the payment/exclusion screen if it is already open."""
     print("Verificando se a tela de pagamentos já está aberta...")
 
     window = find_window_by_prefix(PAYMENT_SCREEN_TITLE)
@@ -498,6 +537,7 @@ def close_payment_screen_if_open() -> None:
 
 
 def open_payment_screen() -> bool:
+    """Open the payment/exclusion screen from the main Agro window."""
     print("Abrindo tela de pagamentos...")
 
     if not focus_window(MAIN_WINDOW_TITLE, timeout_seconds=10):
@@ -516,6 +556,7 @@ def open_payment_screen() -> bool:
 
 
 def prepare_payment_screen() -> bool:
+    """Prepare a clean payment/exclusion screen."""
     close_payment_screen_if_open()
 
     if not open_payment_screen():
@@ -528,6 +569,7 @@ def select_payment_estab_filter(
     empresa: str,
     fornecedor: str = "",
 ) -> bool:
+    """Select the establishment filter inside the payment screen."""
     empresa_formatada = str(empresa).strip()
 
     if not empresa_formatada:
@@ -556,31 +598,15 @@ def select_payment_estab_filter(
     pyautogui.hotkey("alt", "2")
     time.sleep(1)
 
-    print("Clicando no campo ESTAB via pywinauto...")
-
-    if not click_payment_estab_field():
-        notify_processing_failure(
-            error_name="Falha ao clicar no campo ESTAB",
-            error_description=(
-                "Não foi possível clicar no campo ESTAB "
-                "[CLASS:TVsNumRight; INSTANCE:5] da tela de pagamentos."
-            ),
-            fornecedor=fornecedor,
-            empresa=empresa_formatada,
-        )
-        return False
+    print("Indo até o campo de ESTAB com TAB...")
+    pyautogui.press("tab")
+    time.sleep(0.5)
 
     print("Limpando campo de ESTAB...")
     pyautogui.hotkey("ctrl", "a")
     time.sleep(0.2)
 
     pyautogui.press("backspace")
-    time.sleep(0.2)
-
-    pyautogui.press("end")
-    time.sleep(0.2)
-
-    pyautogui.press("backspace", presses=20, interval=0.02)
     time.sleep(0.3)
 
     print(f"Digitando ESTAB: {empresa_formatada}")
@@ -595,10 +621,100 @@ def select_payment_estab_filter(
     return True
 
 
+def click_todos_estabelecimentos() -> bool:
+    """Click the Todos option on the establishments tab."""
+    try:
+        import os
+        from pathlib import Path
+
+        import comtypes.client
+
+        cache_dir = Path(os.environ["APPDATA"]) / "comtypes_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        comtypes.client.gen_dir = str(cache_dir)
+
+        from pywinauto import Application
+
+        app = Application(backend="win32").connect(
+            title_re=f".*{PAYMENT_SCREEN_TITLE}.*"
+        )
+
+        janela = app.window(title_re=f".*{PAYMENT_SCREEN_TITLE}.*")
+        janela.wait("visible", timeout=10)
+        janela.set_focus()
+        time.sleep(0.5)
+
+        fields = [
+            control
+            for control in janela.descendants()
+            if control.class_name() == TODOS_ESTAB_FIELD_CLASS
+        ]
+
+        print(
+            "Campos encontrados na tela de pagamentos "
+            f"com classe {TODOS_ESTAB_FIELD_CLASS}: {len(fields)}"
+        )
+
+        if TODOS_ESTAB_FIELD_INDEX >= len(fields):
+            print(
+                f"Índice inválido: {TODOS_ESTAB_FIELD_INDEX}. "
+                f"Campos encontrados: {len(fields)}"
+            )
+            return False
+
+        campo_todos = fields[TODOS_ESTAB_FIELD_INDEX]
+        campo_todos.click_input()
+        time.sleep(0.5)
+
+        return True
+
+    except Exception as error:
+        print(f"Erro ao clicar em TODOS na aba estabelecimentos: {error}")
+        return False
+
+
+def setup_payment_screen_for_all_estabs(
+    fornecedor: str = "",
+    empresa: str = "",
+) -> bool:
+    """Open payment screen and configure it to use all establishments."""
+    if not prepare_payment_screen():
+        notify_screen_not_opened(
+            screen_name=PAYMENT_SCREEN_TITLE,
+            fornecedor=fornecedor,
+            empresa=empresa,
+        )
+        return False
+
+    print("Enviando ALT + 2 para aba Estabelecimentos / Filtros Adicionais...")
+    pyautogui.hotkey("alt", "2")
+    time.sleep(1)
+
+    print("Clicando em TODOS na aba de estabelecimentos...")
+    if not click_todos_estabelecimentos():
+        notify_processing_failure(
+            error_name="Falha ao clicar em Todos",
+            error_description=(
+                "Não foi possível clicar na opção Todos da aba "
+                "Estabelecimentos / Filtros Adicionais."
+            ),
+            fornecedor=fornecedor,
+            empresa=empresa,
+        )
+        return False
+
+    print("Enviando ALT + 1 para voltar à aba Principal...")
+    pyautogui.hotkey("alt", "1")
+    time.sleep(1)
+
+    return True
+
+
 def ensure_payment_screen_ready(
     fornecedor: str = "",
     empresa: str = "",
 ) -> bool:
+    """Ensure the payment screen is ready before filtering another invoice."""
     if wait_window_startswith(PAYMENT_SCREEN_TITLE, timeout_seconds=2):
         return True
 
@@ -619,6 +735,7 @@ def ensure_payment_screen_ready(
 
 
 def fill_fatura_filter(_data_fatura: str) -> None:
+    """Select the due date filter on the payment screen."""
     print("Selecionando filtro por vencimento...")
 
     print("Enviando ALT + V...")
@@ -639,6 +756,7 @@ def fill_fatura_filter(_data_fatura: str) -> None:
 
 
 def get_screen_stable_region() -> tuple[int, int, int, int]:
+    """Return the main content region used to detect screen stability."""
     width, height = pyautogui.size()
 
     return (
@@ -649,162 +767,13 @@ def get_screen_stable_region() -> tuple[int, int, int, int]:
     )
 
 
-def handle_post_alt_a_popups_until_finished(
-    timeout_seconds: int = 300,
-    quiet_seconds: int = 60,
-    stable_checks: int = 60,
-    interval: float = 0.5,
-    fornecedor: str = "",
-    empresa: str = "",
-) -> bool:
-    print("Aguardando finalização do flag das linhas após ALT + A...")
-
-    start = time.time()
-    last_popup_time = time.time()
-    last_image = None
-    stable_count = 0
-    region = get_screen_stable_region()
-
-    conceito_blocked_count = 0
-    conceito_count = 0
-    attention_count = 0
-
-    while time.time() - start < timeout_seconds:
-        conceito_blocked_window = find_window_by_prefix(CONCEITO_BLOCKED_WINDOW_TITLE)
-
-        if conceito_blocked_window:
-            conceito_blocked_count += 1
-
-            print(
-                "Popup Conceito - Emissão bloqueada detectado "
-                f"({conceito_blocked_count}). Confirmando com ENTER..."
-            )
-
-            try:
-                conceito_blocked_window.activate()
-                time.sleep(0.4)
-
-                pyautogui.press("enter")
-                time.sleep(0.8)
-
-                last_popup_time = time.time()
-                stable_count = 0
-                last_image = None
-                continue
-
-            except Exception as error:
-                print(
-                    "Erro ao confirmar popup Conceito - Emissão bloqueada: " f"{error}"
-                )
-                return False
-
-        conceito_window = find_window_by_prefix(CONCEITO_WINDOW_TITLE)
-
-        if conceito_window:
-            conceito_count += 1
-
-            print(
-                "Popup Conceito detectado "
-                f"({conceito_count}). Confirmando com ENTER..."
-            )
-
-            try:
-                conceito_window.activate()
-                time.sleep(0.4)
-
-                pyautogui.press("enter")
-                time.sleep(0.8)
-
-                last_popup_time = time.time()
-                stable_count = 0
-                last_image = None
-                continue
-
-            except Exception as error:
-                print(f"Erro ao confirmar popup Conceito: {error}")
-                return False
-
-        attention_window = find_window_by_prefix(ATTENTION_WINDOW_TITLE)
-
-        if attention_window:
-            attention_count += 1
-
-            print(
-                "Popup Atenção após ALT + A detectado "
-                f"({attention_count}). Confirmando com ENTER..."
-            )
-
-            try:
-                attention_window.activate()
-                time.sleep(0.4)
-
-                pyautogui.press("enter")
-                time.sleep(0.8)
-
-                last_popup_time = time.time()
-                stable_count = 0
-                last_image = None
-                continue
-
-            except Exception as error:
-                print(f"Erro ao confirmar popup Atenção após ALT + A: {error}")
-                return False
-
-        try:
-            screenshot = pyautogui.screenshot(region=region)
-            current_image = screenshot.tobytes()
-
-            if current_image == last_image:
-                stable_count += 1
-            else:
-                stable_count = 0
-                last_image = current_image
-
-        except Exception as error:
-            print(f"Erro ao capturar tela para validar estabilidade: {error}")
-            stable_count = 0
-            last_image = None
-
-        without_popup_seconds = time.time() - last_popup_time
-
-        if without_popup_seconds >= quiet_seconds and stable_count >= stable_checks:
-            print(
-                "Nenhum popup pós-ALT+A apareceu nos últimos "
-                f"{quiet_seconds} segundos."
-            )
-            print(
-                "Tela considerada estável. Flag das linhas finalizado. "
-                f"Conceitos bloqueados confirmados: {conceito_blocked_count}. "
-                f"Conceitos confirmados: {conceito_count}. "
-                f"Atenções confirmadas: {attention_count}."
-            )
-            return True
-
-        time.sleep(interval)
-
-    notify_processing_failure(
-        error_name="Tempo limite após ALT+A",
-        error_description=(
-            "O processo ficou aguardando a finalização do flag das linhas após "
-            "ALT + A, mas o tempo limite foi atingido. "
-            f"Conceitos bloqueados confirmados: {conceito_blocked_count}. "
-            f"Conceitos confirmados: {conceito_count}. "
-            f"Atenções confirmadas: {attention_count}."
-        ),
-        fornecedor=fornecedor,
-        empresa=empresa,
-    )
-
-    print_open_windows()
-    return False
-
-
 def wait_blocking_popup_during_reload() -> bool:
+    """Detect blocking popups that can appear while the screen is reloading."""
     popup_titles = [
         ERROR_WINDOW_TITLE,
+        AT_END_OF_TABLE_WINDOW_TITLE,
         ATTENTION_WINDOW_TITLE,
         CONCEITO_WINDOW_TITLE,
-        PAYMENT_FAILURE_WINDOW_TITLE,
     ]
 
     for popup_title in popup_titles:
@@ -823,6 +792,7 @@ def wait_screen_stable(
     stable_checks: int = 3,
     interval: float = 0.8,
 ) -> bool:
+    """Wait until the screen content stops changing or a blocking popup appears."""
     print("Aguardando tela estabilizar...")
 
     start = time.time()
@@ -857,6 +827,7 @@ def wait_screen_stable(
 
 
 def send_ctrl_p_and_wait_reload(step_name: str = "") -> bool:
+    """Send CTRL+P and wait for the screen reload or popup handling point."""
     if step_name:
         print(f"Enviando CTRL + P: {step_name}")
     else:
@@ -879,6 +850,7 @@ def handle_conceito_after_filter(
     fornecedor: str = "",
     empresa: str = "",
 ) -> bool:
+    """Handle the Conceito popup after invoice filtering."""
     print("Verificando popup Conceito após filtro...")
 
     if not wait_window_startswith(CONCEITO_WINDOW_TITLE, timeout_seconds=3):
@@ -904,14 +876,52 @@ def handle_no_pending_title(
     fornecedor: str = "",
     empresa: str = "",
 ) -> bool:
+    """Handle the no pending title error window."""
     print("Verificando janela Erro...")
 
     if not wait_window_startswith(ERROR_WINDOW_TITLE, timeout_seconds=3):
         print("Janela Erro não apareceu.")
         return False
 
+    notify_error_before_close(
+        error_name="Nenhum Título Pendente",
+        error_description="Nenhum Título Pendente foi Encontrado.",
+        fornecedor=fornecedor,
+        empresa=empresa,
+    )
+
     print("Janela Erro detectada: Nenhum Título Pendente foi Encontrado.")
-    print("Confirmando OK e seguindo para o próximo ESTAB sem notificar erro...")
+    print("Confirmando OK e seguindo para o próximo ESTAB...")
+
+    pyautogui.press("enter")
+    time.sleep(1)
+
+    return True
+
+
+def handle_attention_after_alt_a(
+    fornecedor: str = "",
+    empresa: str = "",
+) -> bool:
+    """Handle the attention popup after ALT+A."""
+    print("Verificando popup Atenção após ALT + A...")
+
+    if not wait_window_startswith(ATTENTION_WINDOW_TITLE, timeout_seconds=3):
+        print("Popup Atenção não apareceu.")
+        return False
+
+    notify_error_before_close(
+        error_name="Atenção",
+        error_description="Título sem Valor Autorizado para Pagto.",
+        fornecedor=fornecedor,
+        empresa=empresa,
+    )
+
+    print("Popup Atenção detectado.")
+    print(
+        "Título sem Valor Autorizado para Pagto. "
+        "Confirmando OK e seguindo próximo ESTAB..."
+    )
 
     pyautogui.press("enter")
     time.sleep(1)
@@ -924,6 +934,7 @@ def handle_no_launch_found_attention(
     empresa: str = "",
     notify: bool = True,
 ) -> bool:
+    """Handle the attention popup when no launch is found."""
     print("Verificando popup Atenção: Nenhum lançamento foi encontrado...")
 
     if not wait_window_startswith(ATTENTION_WINDOW_TITLE, timeout_seconds=4):
@@ -948,6 +959,7 @@ def handle_no_launch_found_attention(
 
 
 def click_fornecedor_field_acerto() -> bool:
+    """Click the supplier field on the account adjustment screen."""
     try:
         import os
         from pathlib import Path
@@ -999,6 +1011,7 @@ def click_fornecedor_field_acerto() -> bool:
 
 
 def fill_fornecedor_acerto_field(fornecedor: str) -> bool:
+    """Clear and fill the supplier field on the account adjustment screen."""
     if not click_fornecedor_field_acerto():
         print("Não conseguiu clicar no campo FORNECEDOR do Acerto Individual.")
         return False
@@ -1018,42 +1031,58 @@ def fill_fornecedor_acerto_field(fornecedor: str) -> bool:
     return True
 
 
-def close_payment_failure_popups_until_finished(
-    max_attempts: int = 200,
+def close_optional_receipt_windows(
+    timeout_seconds: int = 5,
+    max_attempts: int = 50,
 ) -> int:
-    print("Verificando tela 'Não foi possível fazer a Baixa'...")
+    print("Verificando se a tela Recibo apareceu...")
 
     total_closed = 0
+    start = time.time()
+
+    while time.time() - start < timeout_seconds:
+        receipt_window = find_window_by_prefix(RECEIPT_WINDOW_TITLE)
+
+        if receipt_window:
+            break
+
+        time.sleep(0.5)
 
     for attempt in range(1, max_attempts + 1):
-        if wait_window_startswith(PAYMENT_FAILURE_WINDOW_TITLE, timeout_seconds=3):
-            total_closed += 1
+        receipt_window = find_window_by_prefix(RECEIPT_WINDOW_TITLE)
 
-            print(
-                "Tela 'Não foi possível fazer a Baixa' encontrada. "
-                f"Confirmando com ENTER ({attempt}/{max_attempts})..."
-            )
+        if not receipt_window:
+            break
 
-            pyautogui.press("enter")
+        total_closed += 1
+
+        print("Tela Recibo encontrada. " f"Fechando ({attempt}/{max_attempts})...")
+
+        try:
+            receipt_window.activate()
+            time.sleep(0.5)
+
+            pyautogui.hotkey("ctrl", "f4")
             time.sleep(1)
-            continue
 
-        print("Tela 'Não foi possível fazer a Baixa' não apareceu mais.")
-        break
+        except Exception as error:
+            print(f"Erro ao fechar tela Recibo: {error}")
+            break
 
     if total_closed:
-        print(
-            "Tela(s) 'Não foi possível fazer a Baixa' fechada(s): " f"{total_closed}."
-        )
+        print(f"Tela(s) Recibo fechada(s): {total_closed}.")
+    else:
+        print("Tela Recibo não apareceu. Seguindo sem Recibo.")
 
     return total_closed
 
 
 def save_account_movement_until_receipt(
-    max_attempts: int = 200,
+    max_attempts: int = 500,
     fornecedor: str = "",
     empresa: str = "",
 ) -> bool:
+    """Save account movement windows and close optional receipt windows."""
     print("Verificando tela Conta Movimento - Lançamento...")
 
     for attempt in range(1, max_attempts + 1):
@@ -1070,76 +1099,21 @@ def save_account_movement_until_receipt(
         print("Tela Conta Movimento - Lançamento não apareceu mais.")
         break
 
-    close_payment_failure_popups_until_finished(max_attempts=max_attempts)
-    close_attention_after_payment_failure_if_open(timeout_seconds=5)
-    close_no_marked_payment_error_if_open(timeout_seconds=5)
-    close_at_end_of_table_error_if_open(timeout_seconds=5)
+    close_at_end_of_table_error_if_open(timeout_seconds=120)
 
     close_optional_receipt_windows(
         timeout_seconds=5,
-        max_attempts=50,
+        max_attempts=max_attempts,
     )
 
-    print("Recibo tratado como opcional. " "Seguindo fluxo após salvamento.")
+    close_at_end_of_table_error_if_open(timeout_seconds=120)
 
+    print("Recibo tratado como opcional. Seguindo fluxo após salvamento.")
     return True
 
 
-def close_post_receipt_filter_popups(
-    fornecedor: str = "",
-    empresa: str = "",
-    timeout_seconds: int = 90,
-) -> None:
-    print("Verificando popups após salvamento...")
-
-    close_at_end_of_table_error_if_open(timeout_seconds=5)
-
-    start = time.time()
-    filter_closed = False
-
-    while time.time() - start < timeout_seconds:
-        close_at_end_of_table_error_if_open(timeout_seconds=1)
-
-        window = find_window_by_prefix(FILTER_INVOICE_WINDOW_TITLE)
-
-        if window:
-            filter_closed = True
-
-            print("Filtro de Faturas pós-salvamento encontrado.")
-            print("Confirmando com ENTER...")
-
-            try:
-                window.activate()
-                time.sleep(0.5)
-
-                pyautogui.press("enter")
-                time.sleep(1)
-
-            except Exception as error:
-                print(f"Erro ao fechar Filtro de Faturas pós-salvamento: {error}")
-
-            break
-
-        time.sleep(0.5)
-
-    if filter_closed:
-        print("Filtro de Faturas pós-salvamento fechado.")
-
-        close_at_end_of_table_error_if_open(timeout_seconds=5)
-
-        if wait_window_startswith(ERROR_WINDOW_TITLE, timeout_seconds=3):
-            print("Janela Erro pós-salvamento detectada.")
-            print("Confirmando com ENTER sem notificar erro...")
-
-            pyautogui.press("enter")
-            time.sleep(1)
-
-        return
-
-    print("Nenhum popup de Filtro de Faturas apareceu após o salvamento.")
-
-
 def close_until_main_finagro(max_attempts: int = 25) -> bool:
+    """Close internal windows until only the main FINAGRO window is active."""
     print(f"Fechando telas até voltar para {MAIN_WINDOW_TITLE}...")
 
     for attempt in range(1, max_attempts + 1):
@@ -1148,16 +1122,13 @@ def close_until_main_finagro(max_attempts: int = 25) -> bool:
         if close_popup_if_open(ATTENTION_WINDOW_TITLE):
             continue
 
+        if close_at_end_of_table_error_if_open(timeout_seconds=1):
+            continue
+
         if close_popup_if_open(ERROR_WINDOW_TITLE):
             continue
 
         if close_popup_if_open(CONCEITO_WINDOW_TITLE):
-            continue
-
-        if close_popup_if_open(FILTER_INVOICE_WINDOW_TITLE):
-            continue
-
-        if close_popup_if_open(PAYMENT_FAILURE_WINDOW_TITLE):
             continue
 
         if close_known_internal_window_if_open():
@@ -1180,10 +1151,88 @@ def close_until_main_finagro(max_attempts: int = 25) -> bool:
     return False
 
 
+def ensure_estab_for_payment_processing(
+    empresa: str,
+    fornecedor: str = "",
+) -> bool:
+    print("Preparando troca de ESTAB antes de Pagamentos/Exclusões...")
+
+    if not close_until_main_finagro():
+        notify_processing_failure(
+            error_name="Falha ao retornar tela principal",
+            error_description=(
+                f"Não foi possível retornar para {MAIN_WINDOW_TITLE} "
+                "antes de trocar o estabelecimento para Pagamentos/Exclusões."
+            ),
+            fornecedor=fornecedor,
+            empresa=empresa,
+        )
+        return False
+
+    try:
+        estab_nota = int(str(empresa).strip())
+    except ValueError:
+        notify_processing_failure(
+            error_name="ESTAB inválido",
+            error_description=f"EMPRESA/ESTAB inválido recebido na consulta: {empresa}.",
+            fornecedor=fornecedor,
+            empresa=empresa,
+        )
+        return False
+
+    try:
+        with get_connection() as connection:
+            estab_logado = int(buscar_estab_logado(connection))
+
+    except Exception as error:
+        notify_processing_failure(
+            error_name="Falha ao consultar ESTAB logado",
+            error_description=f"Não foi possível consultar o ESTAB logado: {error}",
+            fornecedor=fornecedor,
+            empresa=empresa,
+        )
+        return False
+
+    print(f"ESTAB logado: {estab_logado}")
+    print(f"ESTAB que será processado: {estab_nota}")
+
+    if estab_logado == estab_nota:
+        print("ESTAB já está correto para Pagamentos/Exclusões.")
+        return True
+
+    print(f"Trocando ESTAB para {estab_nota}...")
+
+    if not switch_establishment(estab_nota):
+        notify_processing_failure(
+            error_name="Falha ao trocar ESTAB",
+            error_description=f"Não foi possível trocar para o ESTAB {estab_nota}.",
+            fornecedor=fornecedor,
+            empresa=empresa,
+        )
+        return False
+
+    print("Troca de ESTAB realizada com sucesso.")
+
+    if not wait_window_startswith(MAIN_WINDOW_TITLE, timeout_seconds=10):
+        notify_processing_failure(
+            error_name="Tela principal não retornou após troca de ESTAB",
+            error_description=(
+                f"A tela {MAIN_WINDOW_TITLE} não ficou ativa após trocar "
+                f"para o ESTAB {estab_nota}."
+            ),
+            fornecedor=fornecedor,
+            empresa=empresa,
+        )
+        return False
+
+    return True
+
+
 def ensure_estab_for_account_adjustment(
     empresa: str,
     fornecedor: str = "",
 ) -> bool:
+    """Ensure the supplier establishment is active before account adjustment."""
     print("Preparando troca de ESTAB antes do Acerto Individual...")
 
     if not close_until_main_finagro():
@@ -1258,6 +1307,7 @@ def ensure_estab_for_account_adjustment(
 
 
 def send_alt_m_v() -> None:
+    """Open account movement adjustment using ALT held with M and V."""
     print("Enviando ALT + M + V...")
 
     pyautogui.keyDown("alt")
@@ -1277,6 +1327,7 @@ def handle_attention_after_account_search(
     fornecedor: str = "",
     empresa: str = "",
 ) -> bool:
+    """Handle Atenção popup after CTRL+P on account adjustment screen."""
     print("Verificando popup Atenção após CTRL + P no Acerto Individual...")
 
     if not wait_window_startswith(ATTENTION_WINDOW_TITLE, timeout_seconds=3):
@@ -1301,10 +1352,8 @@ def handle_attention_after_account_search(
     return True
 
 
-def process_payment_by_empresa(
-    empresa: str,
-    configurar_filtro_vencimento: bool = True,
-) -> bool:
+def process_payment_by_empresa(empresa: str) -> bool:
+    """Process the payment screen once for the given EMPRESA."""
     data_fatura = get_today_yyyymmdd_empresa(empresa)
 
     print("\n==============================")
@@ -1315,26 +1364,18 @@ def process_payment_by_empresa(
     if not ensure_payment_screen_ready(empresa=empresa):
         return False
 
-    if configurar_filtro_vencimento:
-        fill_fatura_filter(data_fatura)
+    fill_fatura_filter(data_fatura)
 
-        print("Enviando CTRL + P para aplicar filtro por vencimento...")
-        pyautogui.hotkey("ctrl", "p")
-        time.sleep(1)
-    else:
-        print(
-            "Filtro por vencimento já configurado. "
-            "Executando novamente com CTRL + P..."
-        )
-        pyautogui.hotkey("ctrl", "p")
-        time.sleep(1)
+    print("Enviando CTRL + P para aplicar filtro por vencimento...")
+    pyautogui.hotkey("ctrl", "p")
+    time.sleep(1)
 
     if not handle_filter_success_popup():
         notify_processing_failure(
             error_name="Filtro de Faturas não confirmou",
             error_description=(
                 "A janela 'Filtro de Faturas' com a mensagem "
-                "'Filtrado com Sucesso' não apareceu após executar o filtro."
+                "'Filtrado com Sucesso' não apareceu após CTRL + P."
             ),
             empresa=empresa,
         )
@@ -1356,10 +1397,16 @@ def process_payment_by_empresa(
     pyautogui.hotkey("alt", "a")
     time.sleep(1)
 
+    quiet_seconds_alt_a = 120 if str(empresa).strip() == "26" else 30
+
+    print(
+        "Tempo de espera sem popup após ALT + A definido para "
+        f"{quiet_seconds_alt_a}s no ESTAB {empresa}."
+    )
+
     if not handle_post_alt_a_popups_until_finished(
         timeout_seconds=300,
-        quiet_seconds=10,
-        stable_checks=10,
+        quiet_seconds=quiet_seconds_alt_a,
         interval=0.5,
         empresa=empresa,
     ):
@@ -1385,7 +1432,7 @@ def process_payment_by_empresa(
     time.sleep(1)
 
     if not save_account_movement_until_receipt(empresa=empresa):
-        print(f"Falha ao salvar Conta Movimento no ESTAB {empresa}.")
+        print(f"Falha ao salvar Conta Movimento até Recibo no ESTAB {empresa}.")
         return False
 
     close_post_receipt_filter_popups(
@@ -1393,12 +1440,12 @@ def process_payment_by_empresa(
         empresa=empresa,
         timeout_seconds=90,
     )
-
     print(f"Processo do ESTAB {empresa} finalizado.")
     return True
 
 
 def process_account_adjustment_by_supplier(nota: dict[str, Any]) -> bool:
+    """Process account movement adjustment individually by supplier."""
     fornecedor = str(nota.get("FORNECEDOR") or "").strip()
     empresa = str(nota.get("EMPRESA") or "").strip()
     data_hoje = get_today_yyyymmdd_empresa(empresa)
@@ -1536,20 +1583,21 @@ def process_account_adjustment_by_supplier(nota: dict[str, Any]) -> bool:
     pyautogui.hotkey("ctrl", "s")
     time.sleep(1.5)
 
-    close_payment_failure_popups_until_finished(max_attempts=50)
+    close_optional_receipt_windows(
+        timeout_seconds=5,
+        max_attempts=50,
+    )
+
     close_at_end_of_table_error_if_open(timeout_seconds=5)
 
-    print(
-        "Recibo está desabilitado no sistema. "
-        "Seguindo fluxo sem aguardar tela Recibo."
-    )
+    print("Recibo tratado como opcional no Acerto Individual.")
 
     if handle_no_launch_found_attention(
         fornecedor=fornecedor,
         empresa=empresa,
         notify=False,
     ):
-        print("Atenção de nenhum lançamento tratada após salvamento.")
+        print("Atenção de nenhum lançamento tratada após Recibo.")
 
     if not close_until_main_finagro():
         notify_processing_failure(
@@ -1568,6 +1616,7 @@ def process_account_adjustment_by_supplier(nota: dict[str, Any]) -> bool:
 
 
 def process_1(notas: list[dict[str, Any]] | dict[str, Any]) -> bool:
+    """Process the financial workflow grouped by establishment and supplier."""
     print("Iniciando process_1...")
 
     notas_processamento = normalize_notas(notas)
@@ -1594,38 +1643,46 @@ def process_1(notas: list[dict[str, Any]] | dict[str, Any]) -> bool:
 
     print("\n===== FASE 1: Pagamentos/Exclusões por ESTAB =====")
     print(
-        "A tela de pagamentos será aberta uma vez. "
-        "Cada ESTAB será selecionado na aba ALT + 2, sem marcar Todos."
+        "Cada ESTAB será processado em uma execução isolada: "
+        "fecha a tela de pagamentos, troca o ESTAB logado, "
+        "abre Pagamentos/Exclusões e executa o processo completo."
     )
 
-    if not prepare_payment_screen():
-        notify_screen_not_opened(
-            screen_name=PAYMENT_SCREEN_TITLE,
-            fornecedor=primeiro_fornecedor,
-            empresa=primeira_empresa,
-        )
-        print("Não foi possível preparar a tela de pagamentos.")
-        return False
-
-    for index_empresa, empresa in enumerate(empresas):
+    for empresa in empresas:
         print("\n==============================")
-        print(f"Preparando filtro interno para ESTAB: {empresa}")
+        print(f"Preparando execução isolada para ESTAB: {empresa}")
         print("==============================")
 
-        if not select_payment_estab_filter(
+        if not ensure_estab_for_payment_processing(
             empresa=empresa,
             fornecedor=primeiro_fornecedor,
         ):
-            print(f"Não foi possível selecionar o ESTAB {empresa}.")
+            print(f"Não foi possível trocar para o ESTAB {empresa}.")
             return False
 
-        configurar_filtro_vencimento = index_empresa == 0
+        if not prepare_payment_screen():
+            notify_screen_not_opened(
+                screen_name=PAYMENT_SCREEN_TITLE,
+                fornecedor=primeiro_fornecedor,
+                empresa=empresa,
+            )
+            print(f"Não foi possível abrir a tela de pagamentos no ESTAB {empresa}.")
+            return False
 
-        if not process_payment_by_empresa(
-            empresa=empresa,
-            configurar_filtro_vencimento=configurar_filtro_vencimento,
-        ):
+        if not process_payment_by_empresa(empresa):
             print(f"Falha ao processar pagamento por vencimento no ESTAB {empresa}.")
+            return False
+
+        if not close_until_main_finagro():
+            notify_processing_failure(
+                error_name="Falha ao retornar tela principal",
+                error_description=(
+                    f"Não foi possível retornar para {MAIN_WINDOW_TITLE} "
+                    f"após finalizar o ESTAB {empresa} na fase de pagamentos."
+                ),
+                fornecedor=primeiro_fornecedor,
+                empresa=empresa,
+            )
             return False
 
     print("Fase 1 finalizada: Pagamentos/Exclusões por ESTAB.")

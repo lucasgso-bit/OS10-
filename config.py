@@ -37,9 +37,12 @@ COMPUTADOR_ROBO: str = os.getenv("COMPUTADOR_ROBO") or getpass.getuser()
 AGRO_USUARIO = os.getenv("AGRO_USUARIO", "RPA.OS07")
 AGRO_SENHA = os.getenv("AGRO_SENHA", "")
 OS11_SERVICO_FIXO: int = int(os.getenv("OS11_SERVICO_FIXO", "30"))
+OS14_EMAIL_TO = os.getenv("OS14_EMAIL_TO", "")
+OS17_EMAIL_TO = os.getenv("OS17_EMAIL_TO", "")
 OS18_SMTP_TO = os.getenv("OS18_SMTP_TO", "joao.netto@ourosafra.com.br")
 
 SMTP_HOST = os.getenv("SMTP_HOST", "")
+SMTP_PORT: int = int(os.getenv("SMTP_PORT", "25"))
 EMAIL_FROM = os.getenv("EMAIL_FROM", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 

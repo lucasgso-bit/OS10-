@@ -74,6 +74,7 @@ WHERE
             TO_NUMBER(TO_CHAR(SYSDATE, 'HH24')) < 23
             AND N.NOTACONF IN ('244', '255', '270', '275', '284', '314', '285')
             AND N.IEEMITENTE IS NOT NULL
+           -- AND N.CHAVEACESSO = '31260620499489000103550010011483081234763795'
         )
         OR
         -- Antes das 23h: fallback 225/232 — só entra se a configuração principal não tiver nada

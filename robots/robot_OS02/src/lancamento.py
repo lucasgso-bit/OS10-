@@ -54,9 +54,9 @@ def _fmt_data(valor: Any) -> str:
 
 
 def _fmt_valor(valor: Any) -> str:
-    """Format a numeric value to 2 decimal places using a comma separator."""
+    """Format a numeric value to 4 decimal places using a comma separator."""
     try:
-        d = Decimal(str(valor)).quantize(Decimal("0.000000001"), rounding=ROUND_HALF_UP)
+        d = Decimal(str(valor)).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
     except Exception:
         return str(valor)
     return str(d).replace(".", ",")
@@ -71,19 +71,42 @@ def _fmt_quantidade(valor: Any) -> str:
     return str(d).replace(".", ",")
 
 
+def _checar_erro_popup() -> bool:
+    """Dismiss any open Advertências/error window and return True if a critical row was found."""
+    for window in gw.getAllWindows():
+        title = window.title.strip()
+        if title.startswith("[A]dvertências") or title.startswith("[A]dvertencias"):
+            if _advertencias_tem_erro_critico():
+                print("[OS02] Erro crítico detectado na janela de Advertências.")
+                pyautogui.press("escape")
+                _sleep(0.5)
+                return True
+            pyautogui.hotkey("alt", "o")
+            _sleep(0.5)
+    return False
+
+
 def _advertencias_tem_erro_critico() -> bool:
     """Return True if the Advertências window has a red error row.
 
-    Scans a strip of pixels on the first list items — same technique as OS07.
-    A red pixel (r>150, g<80, b<80) indicates an '(I) Inconsistência' row.
+    Captures a screenshot of the window's list area and scans for any
+    red pixel (r>150, g<80, b<80) indicating an '(I) Inconsistência' row.
+    Uses a region screenshot (single capture) instead of per-pixel calls
+    to avoid missing red text pixels when the background is white/cream.
     """
     for window in gw.getAllWindows():
         title = window.title.strip()
         if title.startswith("[A]dvertências") or title.startswith("[A]dvertencias"):
-            for y_off in range(35, 65):
-                r, g, b = pyautogui.pixel(window.left + 50, window.top + y_off)
-                if r > 150 and g < 80 and b < 80:
-                    return True
+            left = window.left + 5
+            top = window.top + 28
+            width = max(1, min(window.width - 10, 600))
+            height = 80
+            img = pyautogui.screenshot(region=(left, top, width, height))
+            for y in range(0, img.height, 2):
+                for x in range(0, img.width, 3):
+                    r, g, b = img.getpixel((x, y))
+                    if r > 150 and g < 80 and b < 80:
+                        return True
     return False
 
 
@@ -200,7 +223,12 @@ def lancar_nota_162(
     pyautogui.write(chave_acesso, interval=0.02)
     _sleep(1)
     pyautogui.press("enter")
-    _sleep(1)
+    _sleep(2)
+    # 656-Rejeição: Consumo Indevido — AGRO queries SEFAZ after chave entry; dismiss and continue
+    if wait_window_startswith("Atenção", timeout_seconds=3):
+        print("[OS02] Popup 'Atenção' após chave — descartando e continuando.")
+        pyautogui.press("enter")
+        _sleep(0.5)
     pyautogui.press("enter")
     _sleep(1)
     pyautogui.press("enter")
@@ -209,6 +237,12 @@ def lancar_nota_162(
     _sleep(0.3)
     pyautogui.press("enter")
     _sleep(1)
+
+    if _checar_erro_popup():
+        print(
+            f"[OS02] Erro detectado após inserção da chave — abortando nota {numero_nota}."
+        )
+        return False
 
     # ------------------------------------------------------------------
     # 9. Date field on new screen → 11 Enters to reach item code field
@@ -241,7 +275,7 @@ def lancar_nota_162(
         codigo_item = str(item.get("ITEM") or "").strip()
         quantidade = _fmt_quantidade(item.get("QUANTIDADE") or "").strip()
         valor_unitario = _fmt_valor(item.get("VALOR_UNITARIO") or "0")
-        cfop = str(nota.get("CFOP") or "").strip()
+        cfop = str(item.get("CFOP") or nota.get("CFOP") or "").strip()
 
         print(
             f"[OS02] Item {idx + 1}/{len(itens)}: "
@@ -252,13 +286,13 @@ def lancar_nota_162(
         pyautogui.write(codigo_item, interval=0.03)
         _sleep(0.3)
         pyautogui.press("enter")
-        _sleep(1)
+        _sleep(0.7)
         pyautogui.press("enter")
-        _sleep(0.3)
+        _sleep(2)
 
         # b. Quantity → Enter
         pyautogui.write(quantidade, interval=0.03)
-        _sleep(0.3)
+        _sleep(1)
         pyautogui.press("enter")
         _sleep(3)
 
@@ -266,9 +300,9 @@ def lancar_nota_162(
         pyautogui.write(valor_unitario, interval=0.03)
         _sleep(0.7)
         pyautogui.press("enter")
-        _sleep(0.3)
+        _sleep(0.5)
         pyautogui.press("enter")
-        _sleep(2)
+        _sleep(1)
 
         # d. CFOP → Enter
         pyautogui.write(cfop, interval=0.03)
@@ -276,23 +310,34 @@ def lancar_nota_162(
         pyautogui.press("enter")
         _sleep(1)
 
+        if _checar_erro_popup():
+            print(
+                f"[OS02] Erro detectado após item {idx + 1} da nota {numero_nota} — abortando."
+            )
+            return False
+
     # ------------------------------------------------------------------
     # 11. Save → handle popups → close form
     # ------------------------------------------------------------------
     pyautogui.hotkey("ctrl", "s")
-    _sleep(2)
 
-    # Advertências/Inconsistências popup
-    if wait_window_startswith("[A]dvertências", timeout_seconds=5):
-        if _advertencias_tem_erro_critico():
-            # Red row detected — critical error, skip this note
-            print(f"[OS02] Linha vermelha detectada na nota {numero_nota} — pulando.")
-            pyautogui.press("escape")
-            _sleep(0.5)
-            return False
-        # Only warnings — proceed
-        pyautogui.hotkey("alt", "o")
+    # Wait up to 12s for any post-save dialog (Advertências or Atenção) before
+    # checking for errors — the dialog may take several seconds to appear after
+    # AGRO finishes its SEFAZ / internal validation round-trip.
+    _deadline = time.time() + 12
+    while time.time() < _deadline:
+        _titles = [w.title.strip() for w in gw.getAllWindows()]
+        if any(t.startswith("[A]dvertência") or t.startswith("[A]dvertencia") for t in _titles):
+            break
+        if any(t.startswith("Atenção") for t in _titles):
+            break
+        _sleep(0.5)
+    else:
         _sleep(1)
+
+    if _checar_erro_popup():
+        print(f"[OS02] Erro crítico ao salvar nota {numero_nota} — abortando.")
+        return False
 
     # Atenção popup → ENTER to confirm
     if wait_window_startswith("Atenção", timeout_seconds=5):

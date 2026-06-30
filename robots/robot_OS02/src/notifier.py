@@ -14,12 +14,19 @@ from typing import Any
 
 import pyautogui
 
-from config import COMPUTADOR_ROBO, EMAIL_FROM, EMAIL_PASSWORD, SMTP_HOST, TICKETLOG_EMAIL_TO
+from config import (
+    COMPUTADOR_ROBO,
+    EMAIL_FROM,
+    EMAIL_PASSWORD,
+    SMTP_HOST,
+    TICKETLOG_EMAIL_TO,
+)
 
 SCREENSHOT_DIR = r"C:\OuroSafra\IMGERRO"
 
 EMAIL_TO = [
     "matheus.correa@ourosafra.com.br",
+    "felipe.reis@ourosafra.com.br",
 ]
 
 _TH = (
@@ -139,7 +146,13 @@ def enviar_relatorio_importacao(
     )
     msg["From"] = EMAIL_FROM
     msg["To"] = ", ".join(email_to)
-    msg.attach(MIMEText(_build_html(total_novas, total_ignoradas, lotes, data_inicial, data_final), "html", "utf-8"))
+    msg.attach(
+        MIMEText(
+            _build_html(total_novas, total_ignoradas, lotes, data_inicial, data_final),
+            "html",
+            "utf-8",
+        )
+    )
 
     try:
         with smtplib.SMTP(SMTP_HOST, 25, timeout=15) as server:
@@ -269,7 +282,9 @@ def _build_html_erro(nota: dict[str, Any], motivo: str) -> str:
     return result
 
 
-def _send_error_email(nota: dict[str, Any], motivo: str, screenshot_path: str | None) -> None:
+def _send_error_email(
+    nota: dict[str, Any], motivo: str, screenshot_path: str | None
+) -> None:
     numero_nota = nota.get("NUMERO_NOTA", "")
     estab = nota.get("ESTAB", "")
     usuario = os.environ.get("USERNAME") or os.environ.get("USER") or "desconhecido"
@@ -308,7 +323,9 @@ def notify_error(nota: dict[str, Any], motivo: str) -> None:
 
     numero_nota = nota.get("NUMERO_NOTA", "sem_nota")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    screenshot_path = os.path.join(SCREENSHOT_DIR, f"erro_os02_{numero_nota}_{timestamp}.png")
+    screenshot_path = os.path.join(
+        SCREENSHOT_DIR, f"erro_os02_{numero_nota}_{timestamp}.png"
+    )
 
     screenshot_saved = False
     try:
