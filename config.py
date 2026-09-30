@@ -32,7 +32,11 @@ DSN_DB = os.getenv("DSN_DB", "")
 CLIENT_PATH = os.getenv("CLIENT_PATH", "")
 
 AGRO_EXE = os.getenv("AGRO_EXE", r"C:\Viasoft\Client\Agro\agro3c.exe")
+AGRO_TST_EXE = os.getenv(
+    "AGRO_TST_EXE", r"\\10.200.3.111\Viasoft antigo\Client\Agro\Agro3C.exe"
+)
 FINAGRO_EXE = os.getenv("FINAGRO_EXE", r"C:\Viasoft\Client\Agro\FinAgro3C.exe")
+EXPED_EXE = os.getenv("EXPED_EXE", r"C:\Viasoft\Client\Agro\Exped.exe")
 COMPUTADOR_ROBO: str = os.getenv("COMPUTADOR_ROBO") or getpass.getuser()
 AGRO_USUARIO = os.getenv("AGRO_USUARIO", "RPA.OS07")
 AGRO_SENHA = os.getenv("AGRO_SENHA", "")
