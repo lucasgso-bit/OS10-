@@ -317,6 +317,18 @@ def notify_erro_os10(
 
         print("[OS10] E-mail de erro enviado.")
 
+        # Só apaga o print depois do envio bem-sucedido, para não acumular
+        # arquivos na pasta. Se o envio falhar, o print é mantido.
+        if screenshot_path and os.path.exists(screenshot_path):
+            try:
+                os.remove(screenshot_path)
+                print(f"[OS10] Print removido após envio: {screenshot_path}")
+            except OSError as exc:
+                print(
+                    "[OS10] Não foi possível remover o print "
+                    f"{screenshot_path}: {exc}"
+                )
+
     except Exception as exc:
         print(f"[OS10] Erro ao enviar e-mail de erro: {exc}")
 

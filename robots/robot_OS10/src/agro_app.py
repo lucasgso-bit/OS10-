@@ -47,21 +47,27 @@ def kill_agro_process(process_name: str = "Agro3C.exe") -> int:
 
             killed += 1
 
-            print(f"Processo finalizado: {name} PID={pid}")
+            print(f"[OS10] Processo finalizado: {name} PID={pid}")
 
         except psutil.NoSuchProcess:
             continue
 
         except psutil.AccessDenied:
-            print(f"Sem permissão para finalizar " f"{process_name} PID={process.pid}")
+            print(
+                f"[OS10] Sem permissão para finalizar "
+                f"{process_name} PID={process.pid}"
+            )
 
         except psutil.TimeoutExpired:
-            print(f"Timeout ao finalizar " f"{process_name} PID={process.pid}")
+            print(
+                f"[OS10] Timeout ao finalizar "
+                f"{process_name} PID={process.pid}"
+            )
 
     if killed:
         time.sleep(2)
 
-    # return killed
+    return killed
 
 
 def start_agro(agro_exe: str) -> subprocess.Popen:

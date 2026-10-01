@@ -16,7 +16,6 @@ from .agro_login import login_agro
 from .database import buscar_notas_pendentes
 from .lancamento import executar_lancamento
 
-
 AGRO_PROCESS_NAME = "Agro3C.exe"
 AGRO_MAIN_TITLE = "AGRO-"
 
@@ -47,15 +46,10 @@ def run_once(
                     computer_name=COMPUTADOR_ROBO,
                 )
 
-            print(
-                f"[OS10] U_ROBOT_LOG {log_id} -> CONCLUIDO"
-            )
+            print(f"[OS10] U_ROBOT_LOG {log_id} -> CONCLUIDO")
 
         else:
-            print(
-                "[OS10] Execução manual concluída. "
-                "U_ROBOT_LOG não atualizado."
-            )
+            print("[OS10] Execução manual concluída. " "U_ROBOT_LOG não atualizado.")
 
     except Exception as exc:
         if not manual:
@@ -66,15 +60,10 @@ def run_once(
                     f"Erro: {str(exc)[:3990]}",
                 )
 
-            print(
-                f"[OS10] U_ROBOT_LOG {log_id} -> ERRO"
-            )
+            print(f"[OS10] U_ROBOT_LOG {log_id} -> ERRO")
 
         else:
-            print(
-                "[OS10] Execução manual com erro. "
-                "U_ROBOT_LOG não atualizado."
-            )
+            print("[OS10] Execução manual com erro. " "U_ROBOT_LOG não atualizado.")
 
         raise
 
@@ -85,22 +74,15 @@ def _run_body(
 ) -> None:
     """Run OS10 process."""
 
-    print(
-        f"[OS10] Iniciando execução | "
-        f"log_id={log_id}"
-    )
+    print(f"[OS10] Iniciando execução | " f"log_id={log_id}")
 
     notas = _obter_notas(task)
 
     if not notas:
-        print(
-            "[OS10] Nenhuma nota encontrada para processar."
-        )
+        print("[OS10] Nenhuma nota encontrada para processar.")
         return
 
-    print(
-        f"[OS10] Total de notas: {len(notas)}"
-    )
+    print(f"[OS10] Total de notas: {len(notas)}")
 
     _executar_lancamento(
         notas=notas,
@@ -108,9 +90,7 @@ def _run_body(
         log_id=log_id,
     )
 
-    print(
-        "[OS10] Execução finalizada com sucesso."
-    )
+    print("[OS10] Execução finalizada com sucesso.")
 
 
 def _obter_notas(
@@ -136,10 +116,7 @@ def _executar_lancamento(
 ) -> None:
     """Open Agro test environment and launch notes."""
 
-    print(
-        "[OS10] Abrindo Agro teste para lançamento | "
-        f"notas={len(notas)}"
-    )
+    print("[OS10] Abrindo Agro teste para lançamento | " f"notas={len(notas)}")
 
     try:
         _abrir_sistema(
@@ -155,13 +132,11 @@ def _executar_lancamento(
         )
 
     finally:
-        kill_agro_process(
-            AGRO_PROCESS_NAME
-        )
+        # kill_agro_process(
+        #     AGRO_PROCESS_NAME
+        # )
 
-        print(
-            "[OS10] Agro teste encerrado."
-        )
+        print("[OS10] Agro teste encerrado.")
 
 
 def _abrir_sistema(
@@ -171,22 +146,15 @@ def _abrir_sistema(
 ) -> None:
     """Open Agro, login, and validate the main screen."""
 
-    print(
-        f"[OS10] Abrindo sistema: {exe_path}"
-    )
+    print(f"[OS10] Abrindo sistema: {exe_path}")
 
     # ============================================
     # GARANTE QUE NÃO EXISTE AGRO ANTIGO ABERTO
     # ============================================
 
-    print(
-        "[OS10] Encerrando possíveis processos "
-        "anteriores do Agro."
-    )
+    print("[OS10] Encerrando possíveis processos " "anteriores do Agro.")
 
-    kill_agro_process(
-        process_name
-    )
+    kill_agro_process(process_name)
 
     time.sleep(1)
 
@@ -194,50 +162,33 @@ def _abrir_sistema(
     # ABRE O AGRO
     # ============================================
 
-    print(
-        "[OS10] Inicializando Agro."
-    )
+    print("[OS10] Inicializando Agro.")
 
-    start_agro(
-        exe_path
-    )
+    start_agro(exe_path)
 
-    print(
-        f"[OS10] Aguardando {START_DELAY_SECONDS}s "
-        "para inicialização inicial."
-    )
+    print(f"[OS10] Aguardando {START_DELAY_SECONDS}s " "para inicialização inicial.")
 
-    time.sleep(
-        START_DELAY_SECONDS
-    )
+    time.sleep(START_DELAY_SECONDS)
 
     # ============================================
     # LOGIN
     # ============================================
 
-    print(
-        "[OS10] Executando login."
-    )
+    print("[OS10] Executando login.")
 
     login_agro()
 
-    print(
-        "[OS10] Login executado."
-    )
+    print("[OS10] Login executado.")
 
     # ============================================
     # TRATA TELAS INTERMEDIÁRIAS
     # ============================================
 
-    print(
-        "[OS10] Verificando tela Atenção."
-    )
+    print("[OS10] Verificando tela Atenção.")
 
     confirm_attention_popup()
 
-    print(
-        "[OS10] Verificando seleção de estabelecimento."
-    )
+    print("[OS10] Verificando seleção de estabelecimento.")
 
     confirm_establishment_selection()
 
@@ -245,10 +196,7 @@ def _abrir_sistema(
     # PRIMEIRA TENTATIVA
     # ============================================
 
-    print(
-        "[OS10] Aguardando tela principal do Agro | "
-        f"prefixo={main_title}"
-    )
+    print("[OS10] Aguardando tela principal do Agro | " f"prefixo={main_title}")
 
     encontrou_agro = wait_window_startswith(
         main_title,
@@ -260,23 +208,15 @@ def _abrir_sistema(
     # ============================================
 
     if not encontrou_agro:
-        print(
-            "[OS10] Tela principal ainda não apareceu."
-        )
+        print("[OS10] Tela principal ainda não apareceu.")
 
-        print(
-            "[OS10] Verificando novamente possíveis "
-            "telas intermediárias."
-        )
+        print("[OS10] Verificando novamente possíveis " "telas intermediárias.")
 
         confirm_attention_popup()
 
         confirm_establishment_selection()
 
-        print(
-            "[OS10] Aguardando novamente a tela "
-            "principal do Agro."
-        )
+        print("[OS10] Aguardando novamente a tela " "principal do Agro.")
 
         encontrou_agro = wait_window_startswith(
             main_title,
@@ -289,11 +229,7 @@ def _abrir_sistema(
 
     if not encontrou_agro:
         raise RuntimeError(
-            f"Tela {main_title} não abriu após login "
-            "em até 60 segundos."
+            f"Tela {main_title} não abriu após login " "em até 60 segundos."
         )
 
-    print(
-        "[OS10] Sistema aberto com sucesso | "
-        f"prefixo={main_title}"
-    )
+    print("[OS10] Sistema aberto com sucesso | " f"prefixo={main_title}")

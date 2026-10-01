@@ -14,21 +14,19 @@ from __future__ import annotations
 
 import ctypes
 import os
-import subprocess
 import time
 import unicodedata
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import pyautogui
-import psutil
 import pygetwindow as gw
 import win32con
 import win32gui
 import win32clipboard
 from pywinauto import Desktop
 
+from .agro_app import kill_agro_process, start_agro
 from .agro_estab import switch_establishment, wait_window_startswith
 from .notifier import notify_conclusao_os10, notify_erro_os10
 from .fiscal_retencao import analisar_retencoes, RetencaoImposto
@@ -133,6 +131,20 @@ def _find_window_startswith(title_prefix: str) -> int | None:
     return found_hwnd
 
 
+class ErroComPrint(RuntimeError):
+    """
+    Erro que já carrega o print da tela no momento da falha.
+
+    O executar_lancamento() reaproveita esse print no e-mail de erro, em vez
+    de tirar outro depois (quando o Agro já foi reiniciado). O notifier apaga
+    o arquivo após o envio.
+    """
+
+    def __init__(self, mensagem: str, screenshot_path: str | None = None) -> None:
+        super().__init__(mensagem)
+        self.screenshot_path = screenshot_path
+
+
 def tirar_print_erro(nota: dict[str, Any]) -> str | None:
     """Take screenshot for OS10 error."""
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
@@ -188,10 +200,7 @@ def executar_lancamento(
             )
 
         except Exception as exc:
-            print(
-                "[OS10] ERRO COMPLETO:",
-                repr(exc)
-            )
+            print("[OS10] ERRO COMPLETO:", repr(exc))
 
             motivo = str(exc)
 
@@ -207,7 +216,11 @@ def executar_lancamento(
                 mensagem=motivo,
             )
 
-            screenshot_path = tirar_print_erro(nota)
+            # Reaproveita o print tirado no momento da falha, se o erro
+            # trouxe um. Senão, tira agora.
+            screenshot_path = getattr(
+                exc, "screenshot_path", None
+            ) or tirar_print_erro(nota)
 
             notify_erro_os10(
                 nota=linha_erro,
@@ -225,26 +238,16 @@ def executar_lancamento(
             # o Agro, faz login novamente e segue para a proxima nota.
             if "Valor da duplicata não confere" in motivo:
                 print(
-                    "[OS10] Divergência de valor da duplicata "
-                    ">= R$ 1,00 detectada."
+                    "[OS10] Divergência de valor da duplicata " ">= R$ 1,00 detectada."
                 )
-                print(
-                    "[OS10] Não será feita limpeza das telas transacionais."
-                )
-                print(
-                    "[OS10] Reiniciando Agro e seguindo para a próxima nota."
-                )
+                print("[OS10] Não será feita limpeza das telas transacionais.")
+                print("[OS10] Reiniciando Agro e seguindo para a próxima nota.")
 
                 try:
                     reiniciar_agro()
-                    print(
-                        "[OS10] Agro reiniciado com sucesso."
-                    )
+                    print("[OS10] Agro reiniciado com sucesso.")
                 except Exception as restart_exc:
-                    print(
-                        "[OS10] ERRO AO REINICIAR AGRO: "
-                        f"{restart_exc}"
-                    )
+                    print("[OS10] ERRO AO REINICIAR AGRO: " f"{restart_exc}")
 
                 continue
 
@@ -315,116 +318,20 @@ def _candidatos_valor_duplicata(
     dados: dict[str, str],
 ) -> list[tuple[str, float]]:
     """
-    Return possible expected payment totals for Pagamento com Duplicatas.
+    Return the expected payment total for Pagamento com Duplicatas.
 
-    VALOR_LIQUIDO remains the primary database reference.
-
-    For RETPISCOFINS=3 the current OS10 data uses VALOR_CSLL as the
-    consolidated PIS/COFINS/CSLL retention amount. This is why individual
-    VALOR_PIS and VALOR_COFINS must not be subtracted again in that case.
-
-    Other candidates are only added when their source value is available.
+    A única referência é o VALOR_LIQUIDO do banco. O Total Produtos da
+    tela deve sempre bater com ele.
     """
-    candidatos: list[tuple[str, float]] = []
-
     valor_liquido = round(
         _to_float(dados.get("VALOR_LIQUIDO", "")),
         2,
     )
 
-    if valor_liquido > 0:
-        candidatos.append(
-            ("VALOR_LIQUIDO", valor_liquido)
-        )
+    if valor_liquido <= 0:
+        return []
 
-    valor_total_nf = round(
-        _to_float(dados.get("VALOR_TOTAL_NF", "")),
-        2,
-    )
-
-    valor_retencao = round(
-        _to_float(dados.get("VALOR_RETENCAO", "")),
-        2,
-    )
-
-    if valor_total_nf > 0 and valor_retencao > 0:
-        candidatos.append(
-            (
-                "VALOR_TOTAL_NF - VALOR_RETENCAO",
-                round(valor_total_nf - valor_retencao, 2),
-            )
-        )
-
-    # Caso observado no fluxo atual:
-    # RETPISCOFINS=3 representa retenção conjunta de PIS/COFINS/CSLL.
-    # VALOR_CSLL contém o total consolidado dessa retenção.
-    retpiscofins = str(
-        dados.get("RETPISCOFINS", "") or ""
-    ).strip()
-
-    if valor_total_nf > 0 and retpiscofins == "3":
-        valor_irrf = round(
-            _to_float(dados.get("VALOR_IRRF", "")),
-            2,
-        )
-
-        valor_pcc = round(
-            _to_float(dados.get("VALOR_CSLL", "")),
-            2,
-        )
-
-        valor_inss = round(
-            _to_float(dados.get("VALOR_INSS", "")),
-            2,
-        )
-
-        retissqn = str(
-            dados.get("RETISSQN", "") or ""
-        ).strip()
-
-        valor_iss = 0.0
-
-        # No fluxo atual RETISSQN=1 significa ISS não retido.
-        if retissqn and retissqn != "1":
-            valor_iss = round(
-                _to_float(dados.get("VALOR_ISSQN", "")),
-                2,
-            )
-
-        total_retencoes_financeiras = round(
-            valor_irrf
-            + valor_pcc
-            + valor_inss
-            + valor_iss,
-            2,
-        )
-
-        if total_retencoes_financeiras > 0:
-            candidatos.append(
-                (
-                    "VALOR_TOTAL_NF - RETENCOES_FINANCEIRAS",
-                    round(
-                        valor_total_nf
-                        - total_retencoes_financeiras,
-                        2,
-                    ),
-                )
-            )
-
-    # Remove candidatos duplicados pelo valor, preservando a ordem.
-    unicos: list[tuple[str, float]] = []
-    valores_adicionados: set[float] = set()
-
-    for origem, valor in candidatos:
-        valor = round(valor, 2)
-
-        if valor in valores_adicionados:
-            continue
-
-        valores_adicionados.add(valor)
-        unicos.append((origem, valor))
-
-    return unicos
+    return [("VALOR_LIQUIDO", valor_liquido)]
 
 
 def _validar_valor_duplicata(
@@ -442,9 +349,7 @@ def _validar_valor_duplicata(
         2,
     )
 
-    candidatos = _candidatos_valor_duplicata(
-        dados
-    )
+    candidatos = _candidatos_valor_duplicata(dados)
 
     if not candidatos:
         raise RuntimeError(
@@ -452,10 +357,7 @@ def _validar_valor_duplicata(
             "para Pagamento com Duplicatas."
         )
 
-    print(
-        f"[OS10] Total Produtos tela: {total_produtos} "
-        f"({total_tela:.2f})"
-    )
+    print(f"[OS10] Total Produtos tela: {total_produtos} " f"({total_tela:.2f})")
 
     melhor_origem = ""
     melhor_valor = 0.0
@@ -526,8 +428,12 @@ def _get_clipboard_text() -> str:
 
 
 def somar_centavos_no_campo_selecionado(qtd_centavos: int) -> None:
-    """Add cents to the currently selected field and press ENTER."""
-    if qtd_centavos <= 0:
+    """
+    Add cents to the currently selected field and press ENTER.
+
+    A negative qtd_centavos subtracts cents from the field.
+    """
+    if qtd_centavos == 0:
         return
 
     _set_clipboard_text("")
@@ -540,7 +446,15 @@ def somar_centavos_no_campo_selecionado(qtd_centavos: int) -> None:
     valor_atual_texto = _get_clipboard_text()
     valor_atual_numero = _to_float(valor_atual_texto)
 
-    valor_novo_numero = valor_atual_numero + (qtd_centavos / 100)
+    valor_novo_numero = round(valor_atual_numero + (qtd_centavos / 100), 2)
+
+    if valor_novo_numero < 0:
+        raise RuntimeError(
+            "Ajuste de centavos deixaria o campo negativo | "
+            f"valor_atual={valor_atual_texto} | "
+            f"qtd_centavos={qtd_centavos}"
+        )
+
     valor_novo_texto = _format_decimal_br(valor_novo_numero)
 
     print(
@@ -586,8 +500,17 @@ def ir_para_proximo_imposto_ajuste_centavos() -> None:
 
 
 def ajustar_centavos_pis_cofins_csll(diferenca: float) -> None:
-    """Distribute cents difference between PIS, COFINS and CSLL."""
+    """
+    Distribute cents difference between PIS, COFINS and CSLL.
+
+    diferenca = valor da tela - valor esperado.
+    Positive: tela maior que o esperado, SOMA os centavos nos impostos
+    (mais retenção reduz o total da tela).
+    Negative: tela menor que o esperado, SUBTRAI os centavos dos impostos
+    (menos retenção aumenta o total da tela).
+    """
     qtd_centavos = int(round(abs(diferenca) * 100))
+    sinal = -1 if diferenca < 0 else 1
 
     if qtd_centavos <= 0:
         print("[OS10] Sem diferença de centavos para ajustar.")
@@ -599,6 +522,7 @@ def ajustar_centavos_pis_cofins_csll(diferenca: float) -> None:
 
     print(
         "[OS10] Distribuindo diferença de centavos | "
+        f"operacao={'SOMAR' if sinal > 0 else 'SUBTRAIR'} | "
         f"qtd_centavos={qtd_centavos} | "
         f"PIS={add_pis} | "
         f"COFINS={add_cofins} | "
@@ -609,17 +533,17 @@ def ajustar_centavos_pis_cofins_csll(diferenca: float) -> None:
 
     if add_pis > 0:
         print("[OS10] Ajustando PIS.")
-        somar_centavos_no_campo_selecionado(add_pis)
+        somar_centavos_no_campo_selecionado(sinal * add_pis)
 
     if add_cofins > 0:
         print("[OS10] Ajustando COFINS.")
         ir_para_proximo_imposto_ajuste_centavos()
-        somar_centavos_no_campo_selecionado(add_cofins)
+        somar_centavos_no_campo_selecionado(sinal * add_cofins)
 
     if add_csll > 0:
         print("[OS10] Ajustando CSLL.")
         ir_para_proximo_imposto_ajuste_centavos()
-        somar_centavos_no_campo_selecionado(add_csll)
+        somar_centavos_no_campo_selecionado(sinal * add_csll)
 
     print("[OS10] Ajuste de centavos concluído.")
 
@@ -1225,41 +1149,9 @@ def validar_inss(dados: dict[str, str], decisao: RetencaoImposto | None = None) 
     _sleep(0.2)
 
 
-import time
-
-import win32con
-import win32gui
-
-
-def _sleep(seconds: float) -> None:
-    time.sleep(seconds)
-
-
 def _make_lparam(x: int, y: int) -> int:
     """Create LPARAM from client x/y coordinates."""
     return x | (y << 16)
-
-
-def _find_window_startswith(title_prefix: str) -> int | None:
-    """Find visible window whose title starts with given text."""
-    found_hwnd: int | None = None
-
-    def enum_window(hwnd: int, _: object) -> None:
-        nonlocal found_hwnd
-
-        if found_hwnd is not None:
-            return
-
-        if not win32gui.IsWindowVisible(hwnd):
-            return
-
-        title = win32gui.GetWindowText(hwnd).strip()
-
-        if title.startswith(title_prefix):
-            found_hwnd = hwnd
-
-    win32gui.EnumWindows(enum_window, None)
-    return found_hwnd
 
 
 def _find_panel_by_size(
@@ -1378,6 +1270,64 @@ def _find_child_by_class_instance(
     return matches[instance - 1]
 
 
+def tratar_atencao_abertura_agro(timeout: int = 3) -> bool:
+    """
+    Trata, se aparecer logo após abrir o Agro:
+
+    Title:
+    Atenção
+
+    Class:
+    TMessageForm
+
+    Fluxo: ENTER e CTRL + F4. Se não aparecer dentro do timeout, segue o
+    fluxo normal (troca de estabelecimento, Nota Fiscal...).
+    """
+    prazo = time.time() + timeout
+    hwnd = None
+
+    while time.time() < prazo:
+        candidato = win32gui.FindWindow("TMessageForm", "Atenção")
+
+        if candidato and win32gui.IsWindowVisible(candidato):
+            hwnd = candidato
+            break
+
+        _sleep(0.2)
+
+    if not hwnd:
+        print(
+            "[OS10] Tela Atenção (TMessageForm) não apareceu na abertura "
+            "do Agro. Seguindo fluxo."
+        )
+        return False
+
+    print("[OS10] Tela Atenção (TMessageForm) encontrada na abertura do Agro.")
+
+    try:
+        win32gui.BringWindowToTop(hwnd)
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+    _sleep(0.5)
+
+    print("[OS10] Comando: ENTER")
+    pyautogui.press("enter")
+    _sleep(1)
+
+    if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
+        raise RuntimeError(
+            "Tela Atenção (TMessageForm) não fechou após ENTER na abertura do Agro."
+        )
+
+    print("[OS10] Comando: CTRL + F4")
+    pyautogui.hotkey("ctrl", "f4")
+    _sleep(1)
+
+    return True
+
+
 def _processar_lancamento(nota: dict[str, Any]) -> None:
     """Open Agro flow, switch establishment, open Nota Fiscal and launch note."""
     dados = _dados_lancamento(nota)
@@ -1390,6 +1340,9 @@ def _processar_lancamento(nota: dict[str, Any]) -> None:
         f"DTEMISSAO={dados['DTEMISSAO']} | "
         f"REGRA_NOTACONF={dados['REGRA_NOTACONF']}"
     )
+
+    # Antes de qualquer coisa: pode haver uma Atenção logo após abrir o Agro.
+    tratar_atencao_abertura_agro()
 
     preparar_agro_para_lancamento(dados["ESTAB"])
     iniciar_nova_nota_fiscal()
@@ -1538,9 +1491,7 @@ def abrir_tela_nota_fiscal() -> None:
     hwnd_agro = _find_window_startswith("AGRO-")
 
     if not hwnd_agro:
-        raise RuntimeError(
-            "Janela principal do Agro não encontrada antes do ALT+N."
-        )
+        raise RuntimeError("Janela principal do Agro não encontrada antes do ALT+N.")
 
     print("[OS10] Focando Agro antes do ALT+N.")
 
@@ -1564,9 +1515,7 @@ def abrir_tela_nota_fiscal() -> None:
         "Filtrar NF - Cabeçalho",
         timeout_seconds=15,
     ):
-        raise RuntimeError(
-            "Tela 'Filtrar NF - Cabeçalho' não apareceu após ALT+N."
-        )
+        raise RuntimeError("Tela 'Filtrar NF - Cabeçalho' não apareceu após ALT+N.")
 
     print("[OS10] Tela encontrada: Filtrar NF - Cabeçalho")
 
@@ -1601,8 +1550,6 @@ def iniciar_nova_nota_fiscal() -> None:
 
     _sleep(1)
     print("[OS10] Nova Nota Fiscal aberta.")
-
-
 
 
 # ============================================================
@@ -1641,8 +1588,7 @@ def confirmar_atencao_se_existir(timeout: int = 3) -> bool:
                 continue
 
             print(
-                "[OS10] Popup encontrado. Confirmando com ENTER | "
-                f"TITULO={titulo}"
+                "[OS10] Popup encontrado. Confirmando com ENTER | " f"TITULO={titulo}"
             )
 
             try:
@@ -1672,73 +1618,6 @@ def confirmar_atencao_se_existir(timeout: int = 3) -> bool:
     return False
 
 
-
-
-def get_process_session_id(pid: int) -> int | None:
-    session_id = ctypes.c_ulong()
-
-    success = ctypes.windll.kernel32.ProcessIdToSessionId(
-        ctypes.c_ulong(pid),
-        ctypes.byref(session_id),
-    )
-
-    return int(session_id.value) if success else None
-
-
-def kill_agro_process(process_name: str = "Agro3C.exe") -> int:
-    """Finaliza somente Agro da sessão atual."""
-    killed = 0
-    current_session_id = get_process_session_id(os.getpid())
-
-    if current_session_id is None:
-        raise RuntimeError("Não foi possível identificar a sessão atual do Python.")
-
-    for process in psutil.process_iter(["pid", "name"]):
-        try:
-            name = process.info.get("name")
-            pid = process.info.get("pid")
-
-            if not name or not pid:
-                continue
-
-            if name.lower() != process_name.lower():
-                continue
-
-            if get_process_session_id(pid) != current_session_id:
-                continue
-
-            process.kill()
-            process.wait(timeout=5)
-            killed += 1
-
-            print(f"[OS10] Processo finalizado: {name} PID={pid}")
-
-        except psutil.NoSuchProcess:
-            continue
-        except psutil.AccessDenied:
-            print(f"[OS10] Sem permissão para finalizar {process_name}")
-        except psutil.TimeoutExpired:
-            print(f"[OS10] Timeout ao finalizar {process_name}")
-
-    if killed:
-        _sleep(2)
-
-    return killed
-
-
-def start_agro(agro_exe: str) -> subprocess.Popen:
-    """Abre novamente o Agro."""
-    agro_path = Path(agro_exe)
-
-    if not agro_path.exists():
-        raise FileNotFoundError(f"Executável do Agro não encontrado: {agro_exe}")
-
-    return subprocess.Popen(
-        [str(agro_path)],
-        cwd=str(agro_path.parent),
-    )
-
-
 def _aguardar_selecao_estabelecimento(timeout: int = 30) -> int:
     """Aguarda a tela de seleção de estabelecimento após o login."""
     print(
@@ -1757,9 +1636,7 @@ def _aguardar_selecao_estabelecimento(timeout: int = 30) -> int:
         if hwnd and win32gui.IsWindowVisible(hwnd):
             return hwnd
 
-        hwnd = _find_window_startswith(
-            "Seleção de Estabelecimento para Trabalho"
-        )
+        hwnd = _find_window_startswith("Seleção de Estabelecimento para Trabalho")
 
         if hwnd:
             return hwnd
@@ -1782,9 +1659,7 @@ def _confirmar_atencao_exata(timeout: int = 2) -> bool:
         )
 
         if hwnd and win32gui.IsWindowVisible(hwnd):
-            print(
-                "[OS10] Tela Atenção encontrada durante inicialização do Agro."
-            )
+            print("[OS10] Tela Atenção encontrada durante inicialização do Agro.")
 
             try:
                 win32gui.SetForegroundWindow(hwnd)
@@ -1808,9 +1683,7 @@ def _preparar_agro_apos_login() -> None:
 
     hwnd_estab = _aguardar_selecao_estabelecimento(timeout=30)
 
-    print(
-        "[OS10] Tela 'Seleção de Estabelecimento para Trabalho' encontrada."
-    )
+    print("[OS10] Tela 'Seleção de Estabelecimento para Trabalho' encontrada.")
 
     try:
         win32gui.SetForegroundWindow(hwnd_estab)
@@ -1832,9 +1705,7 @@ def _preparar_agro_apos_login() -> None:
 
     _confirmar_atencao_exata(timeout=2)
 
-    print(
-        "[OS10] Aguardando tela principal do Agro | prefixo=AGRO-"
-    )
+    print("[OS10] Aguardando tela principal do Agro | prefixo=AGRO-")
 
     timeout = time.time() + 60
 
@@ -1855,9 +1726,7 @@ def _preparar_agro_apos_login() -> None:
 
         _sleep(1)
 
-    raise RuntimeError(
-        "Agro não carregou após login e seleção de estabelecimento."
-    )
+    raise RuntimeError("Agro não carregou após login e seleção de estabelecimento.")
 
 
 def abrir_agro_completo() -> None:
@@ -1896,7 +1765,6 @@ def reiniciar_agro() -> None:
     print("[OS10] Restart completo do Agro concluído.")
 
 
-
 def _ler_tv_num_right(campo_hwnd: int) -> str:
     """
     Lê o valor real do controle VCL TVsNumRight21.
@@ -1925,9 +1793,7 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
             or 0
         )
 
-        buffer = ctypes.create_unicode_buffer(
-            max(tamanho + 1, 256)
-        )
+        buffer = ctypes.create_unicode_buffer(max(tamanho + 1, 256))
 
         win32gui.SendMessage(
             campo_hwnd,
@@ -1940,27 +1806,20 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
         leituras.append(("WM_GETTEXT", valor))
 
         print(
-            "[OS10] Leitura TVsNumRight21 | "
-            "método=WM_GETTEXT | "
-            f"valor={valor!r}"
+            "[OS10] Leitura TVsNumRight21 | " "método=WM_GETTEXT | " f"valor={valor!r}"
         )
 
         if valor:
             return valor
 
     except Exception as exc:
-        print(
-            "[OS10] Falha WM_GETTEXT TVsNumRight21: "
-            f"{exc}"
-        )
+        print("[OS10] Falha WM_GETTEXT TVsNumRight21: " f"{exc}")
 
     # ------------------------------------------------------------
     # 2 - GetWindowText
     # ------------------------------------------------------------
     try:
-        valor = win32gui.GetWindowText(
-            campo_hwnd
-        ).strip()
+        valor = win32gui.GetWindowText(campo_hwnd).strip()
 
         leituras.append(("GetWindowText", valor))
 
@@ -1974,41 +1833,27 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
             return valor
 
     except Exception as exc:
-        print(
-            "[OS10] Falha GetWindowText TVsNumRight21: "
-            f"{exc}"
-        )
+        print("[OS10] Falha GetWindowText TVsNumRight21: " f"{exc}")
 
     # ------------------------------------------------------------
     # 3 - pywinauto
     # ------------------------------------------------------------
     try:
-        controle = Desktop(
-            backend="win32"
-        ).window(
-            handle=campo_hwnd
-        )
+        controle = Desktop(backend="win32").window(handle=campo_hwnd)
 
-        valor = str(
-            controle.window_text()
-        ).strip()
+        valor = str(controle.window_text()).strip()
 
         leituras.append(("pywinauto", valor))
 
         print(
-            "[OS10] Leitura TVsNumRight21 | "
-            "método=pywinauto | "
-            f"valor={valor!r}"
+            "[OS10] Leitura TVsNumRight21 | " "método=pywinauto | " f"valor={valor!r}"
         )
 
         if valor:
             return valor
 
     except Exception as exc:
-        print(
-            "[OS10] Falha pywinauto TVsNumRight21: "
-            f"{exc}"
-        )
+        print("[OS10] Falha pywinauto TVsNumRight21: " f"{exc}")
 
     # ------------------------------------------------------------
     # 4 - Clipboard
@@ -2016,12 +1861,8 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
     try:
         hwnd_anterior = win32gui.GetForegroundWindow()
 
-        win32gui.BringWindowToTop(
-            campo_hwnd
-        )
-        win32gui.SetForegroundWindow(
-            campo_hwnd
-        )
+        win32gui.BringWindowToTop(campo_hwnd)
+        win32gui.SetForegroundWindow(campo_hwnd)
 
         _sleep(0.5)
 
@@ -2031,10 +1872,7 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
 
         _sleep(0.2)
 
-        pyautogui.hotkey(
-            "ctrl",
-            "c"
-        )
+        pyautogui.hotkey("ctrl", "c")
 
         _sleep(0.5)
 
@@ -2042,19 +1880,11 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
 
         leituras.append(("CTRL+C", valor))
 
-        print(
-            "[OS10] Leitura TVsNumRight21 | "
-            "método=CTRL+C | "
-            f"valor={valor!r}"
-        )
+        print("[OS10] Leitura TVsNumRight21 | " "método=CTRL+C | " f"valor={valor!r}")
 
-        if hwnd_anterior and win32gui.IsWindow(
-            hwnd_anterior
-        ):
+        if hwnd_anterior and win32gui.IsWindow(hwnd_anterior):
             try:
-                win32gui.SetForegroundWindow(
-                    hwnd_anterior
-                )
+                win32gui.SetForegroundWindow(hwnd_anterior)
             except Exception:
                 pass
 
@@ -2062,10 +1892,7 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
             return valor
 
     except Exception as exc:
-        print(
-            "[OS10] Falha CTRL+C TVsNumRight21: "
-            f"{exc}"
-        )
+        print("[OS10] Falha CTRL+C TVsNumRight21: " f"{exc}")
 
     print(
         "[OS10] TVsNumRight21 não retornou texto. "
@@ -2073,7 +1900,6 @@ def _ler_tv_num_right(campo_hwnd: int) -> str:
     )
 
     return ""
-
 
 
 def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
@@ -2090,9 +1916,7 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
 
     _sleep(2)
 
-    print(
-        "[OS10] Validando PRESTACAO DE SERVICO após ALT+B."
-    )
+    print("[OS10] Validando PRESTACAO DE SERVICO após ALT+B.")
 
     hwnd = win32gui.FindWindow(
         "TFAPartirDe",
@@ -2100,22 +1924,15 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
     )
 
     if not hwnd or not win32gui.IsWindowVisible(hwnd):
-        print(
-            "[OS10] TFAPartirDe / PRESTACAO DE SERVICO "
-            "não encontrada após ALT+B."
-        )
+        print("[OS10] TFAPartirDe / PRESTACAO DE SERVICO " "não encontrada após ALT+B.")
 
         reiniciar_agro()
 
         raise RuntimeError(
-            "PRESTACAO DE SERVICO não encontrada após ALT+B. "
-            "Agro reiniciado."
+            "PRESTACAO DE SERVICO não encontrada após ALT+B. " "Agro reiniciado."
         )
 
-    print(
-        "[OS10] PRESTACAO DE SERVICO encontrada | "
-        f"HWND={hwnd}"
-    )
+    print("[OS10] PRESTACAO DE SERVICO encontrada | " f"HWND={hwnd}")
 
     campo = _find_child_by_class_instance(
         parent_hwnd=hwnd,
@@ -2124,29 +1941,20 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
     )
 
     if not campo:
-        print(
-            "[OS10] TVsNumRight21 não encontrado."
-        )
+        print("[OS10] TVsNumRight21 não encontrado.")
 
         reiniciar_agro()
 
         raise RuntimeError(
-            "TVsNumRight21 não encontrado na PRESTACAO DE SERVICO. "
-            "Agro reiniciado."
+            "TVsNumRight21 não encontrado na PRESTACAO DE SERVICO. " "Agro reiniciado."
         )
 
-    print(
-        "[OS10] TVsNumRight21 encontrado | "
-        f"HWND={campo} | "
-        "ID=1114372"
-    )
+    print("[OS10] TVsNumRight21 encontrado | " f"HWND={campo} | " "ID=1114372")
 
     leituras_zero = 0
 
     for tentativa in range(1, 4):
-        valor = _ler_tv_num_right(
-            campo
-        )
+        valor = _ler_tv_num_right(campo)
 
         print(
             "[OS10] Validação PRESTACAO DE SERVICO | "
@@ -2172,8 +1980,7 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
             )
 
         valor_normalizado = (
-            valor
-            .replace("R$", "")
+            valor.replace("R$", "")
             .replace(" ", "")
             .replace(".", "")
             .replace(",", ".")
@@ -2181,14 +1988,9 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
         )
 
         try:
-            valor_numerico = float(
-                valor_normalizado
-            )
+            valor_numerico = float(valor_normalizado)
         except ValueError:
-            print(
-                "[OS10] Valor lido não é numérico: "
-                f"{valor!r}"
-            )
+            print("[OS10] Valor lido não é numérico: " f"{valor!r}")
 
             if tentativa < 3:
                 _sleep(1)
@@ -2197,8 +1999,7 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
             reiniciar_agro()
 
             raise RuntimeError(
-                "Valor inválido lido do TVsNumRight21: "
-                f"{valor!r}. Agro reiniciado."
+                "Valor inválido lido do TVsNumRight21: " f"{valor!r}. Agro reiniciado."
             )
 
         if valor_numerico > 0:
@@ -2210,10 +2011,7 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
 
         leituras_zero += 1
 
-        print(
-            "[OS10] TVsNumRight21 realmente zerado | "
-            f"leitura={leituras_zero}/3"
-        )
+        print("[OS10] TVsNumRight21 realmente zerado | " f"leitura={leituras_zero}/3")
 
         if tentativa < 3:
             print(
@@ -2222,22 +2020,19 @@ def validar_apartir_de_apos_alt_b(nota: dict[str, Any]) -> None:
             )
             _sleep(1)
 
-    print(
-        "[OS10] TVsNumRight21 permaneceu realmente em 0,00 "
-        "após 3 leituras."
-    )
+    print("[OS10] TVsNumRight21 permaneceu realmente em 0,00 " "após 3 leituras.")
 
-    print(
-        "[OS10] Reiniciando Agro e seguindo para a próxima nota."
-    )
+    # Print ANTES do restart, para registrar a tela vazia.
+    screenshot_path = tirar_print_erro(nota)
+
+    print("[OS10] Reiniciando Agro e seguindo para a próxima nota.")
 
     reiniciar_agro()
 
-    raise RuntimeError(
-        "PRESTACAO DE SERVICO permaneceu em 0,00 após ALT+B. "
-        "Agro reiniciado."
+    raise ErroComPrint(
+        "ApartiDe esta vazio.",
+        screenshot_path,
     )
-
 
 
 def tratar_atencao_pos_alt_b(nota: dict[str, Any]) -> None:
@@ -2280,10 +2075,7 @@ def tratar_atencao_pos_alt_b(nota: dict[str, Any]) -> None:
 
     screenshot_path = tirar_print_erro(nota)
 
-    print(
-        "[OS10] Print da Atenção salvo: "
-        f"{screenshot_path}"
-    )
+    print("[OS10] Print da Atenção salvo: " f"{screenshot_path}")
 
     print("[OS10] Confirmando Atenção com ENTER.")
     pyautogui.press("enter")
@@ -2294,8 +2086,9 @@ def tratar_atencao_pos_alt_b(nota: dict[str, Any]) -> None:
 
     # A nota atual terminou aqui. O executar_lancamento() captura a exceção
     # e usa continue para iniciar a próxima linha.
-    raise RuntimeError(
-        "Tela Atenção apareceu após ALT+B. Agro reiniciado. Próxima linha."
+    raise ErroComPrint(
+        "Tela Atenção apareceu após ALT+B. Agro reiniciado. Próxima linha.",
+        screenshot_path,
     )
 
 
@@ -2329,9 +2122,7 @@ def focar_janela_por_titulo(titulo: str, timeout: int = 10) -> bool:
         return True
 
     except Exception as exc:
-        print(
-            f"[OS10] Falha ao ativar janela '{titulo}' via pygetwindow: {exc}"
-        )
+        print(f"[OS10] Falha ao ativar janela '{titulo}' via pygetwindow: {exc}")
 
         try:
             hwnd = getattr(janela, "_hWnd", None)
@@ -2340,9 +2131,7 @@ def focar_janela_por_titulo(titulo: str, timeout: int = 10) -> bool:
                 time.sleep(0.3)
                 return True
         except Exception as exc2:
-            print(
-                f"[OS10] Falha ao focar janela '{titulo}' via Win32: {exc2}"
-            )
+            print(f"[OS10] Falha ao focar janela '{titulo}' via Win32: {exc2}")
 
     return False
 
@@ -2396,10 +2185,6 @@ def tela_pagamento_duplicatas_aberta(timeout: int = 10) -> bool:
     )
 
 
-def pressionar_alt_a() -> None:
-    pyautogui.hotkey("alt", "a")
-
-
 def clicar_regiao_pagamento() -> None:
     janela = buscar_janela_por_titulo(
         "Pagamento com Duplicatas",
@@ -2418,9 +2203,7 @@ def clicar_regiao_pagamento() -> None:
     print(f"[OS10] Total de grids TVsStringGrid encontrados: {total_grids}")
 
     if total_grids == 0:
-        raise RuntimeError(
-            "Grid de pagamento não encontrado. ClassName=TVsStringGrid"
-        )
+        raise RuntimeError("Grid de pagamento não encontrado. ClassName=TVsStringGrid")
 
     if total_grids > 1:
         raise RuntimeError(
@@ -2504,9 +2287,7 @@ def _linha_digitavel_ja_cadastrada(timeout: int = 3) -> bool:
             texto = ""
 
             if texto_hwnd:
-                texto = win32gui.GetWindowText(
-                    texto_hwnd
-                ).strip()
+                texto = win32gui.GetWindowText(texto_hwnd).strip()
 
             texto_normalizado = normalizar_titulo(texto)
 
@@ -2520,17 +2301,13 @@ def _linha_digitavel_ja_cadastrada(timeout: int = 3) -> bool:
                 )
 
                 try:
-                    win32gui.SetForegroundWindow(
-                        tela_atencao
-                    )
+                    win32gui.SetForegroundWindow(tela_atencao)
                 except Exception:
                     pass
 
                 _sleep(0.3)
 
-                pyautogui.press(
-                    "enter"
-                )
+                pyautogui.press("enter")
 
                 _sleep(0.8)
 
@@ -2550,18 +2327,12 @@ def preencher_boleto(pedido: dict) -> None:
     pyautogui.press("enter")
     time.sleep(0.5)
 
-    chave_boleto = str(
-        pedido["chaveboleto"] or ""
-    ).strip()
+    chave_boleto = str(pedido["chaveboleto"] or "").strip()
 
     if not chave_boleto:
-        raise RuntimeError(
-            "Chave do boleto não informada."
-        )
+        raise RuntimeError("Chave do boleto não informada.")
 
-    print(
-        f"[OS10] Preenchendo chave do boleto: {chave_boleto}"
-    )
+    print(f"[OS10] Preenchendo chave do boleto: {chave_boleto}")
 
     pyautogui.write(
         chave_boleto,
@@ -2570,9 +2341,7 @@ def preencher_boleto(pedido: dict) -> None:
 
     time.sleep(0.5)
 
-    pyautogui.press(
-        "enter"
-    )
+    pyautogui.press("enter")
 
     time.sleep(0.8)
 
@@ -2584,9 +2353,7 @@ def preencher_boleto(pedido: dict) -> None:
             "Nota atual encerrada para seguir para a próxima."
         )
 
-    if confirmar_atencao_se_existir(
-        timeout=2
-    ):
+    if confirmar_atencao_se_existir(timeout=2):
         print(
             "[OS10] Atenção/Erro/Aviso após preencher "
             "a chave do boleto confirmado com ENTER."
@@ -2600,6 +2367,7 @@ def preencher_boleto(pedido: dict) -> None:
         time.sleep(0.5)
 
     tratar_atencao_pagamento()
+
 
 def preencher_deposito(pedido: dict) -> None:
     navegar_direita(14)
@@ -2622,7 +2390,6 @@ def preencher_pix(pedido: dict) -> None:
     preencher_campo("3", descricao="tipo de PIX")
     preencher_campo(pedido["pix"], descricao="chave PIX")
     tratar_atencao_pagamento()
-
 
 
 def preencher_referencia_atencao_pagamento(
@@ -2648,9 +2415,7 @@ def preencher_referencia_atencao_pagamento(
     if not hwnd or not win32gui.IsWindowVisible(hwnd):
         return False
 
-    print(
-        "[OS10] Atenção encontrada após CTRL+S da duplicata."
-    )
+    print("[OS10] Atenção encontrada após CTRL+S da duplicata.")
 
     try:
         win32gui.SetForegroundWindow(hwnd)
@@ -2666,20 +2431,11 @@ def preencher_referencia_atencao_pagamento(
     )
 
     if not campo:
-        raise RuntimeError(
-            "Campo Edit[8] não encontrado na tela Atenção."
-        )
+        raise RuntimeError("Campo Edit[8] não encontrado na tela Atenção.")
 
-    referencia = (
-        f"{dados.get('NUMERO_NF', '')}"
-        "-"
-        f"{dados.get('NUM_PED', '')}"
-    )
+    referencia = f"{dados.get('NUMERO_NF', '')}" "-" f"{dados.get('NUM_PED', '')}"
 
-    print(
-        "[OS10] Preenchendo referência Atenção: "
-        f"{referencia}"
-    )
+    print("[OS10] Preenchendo referência Atenção: " f"{referencia}")
 
     try:
         win32gui.SetForegroundWindow(campo)
@@ -2760,15 +2516,9 @@ def tratar_erro_tfvs_apos_ctrl_s_pagamento(
 
             _sleep(1)
 
-            referencia = (
-                f"{dados.get('NUMERO_NF', '')}-"
-                f"{dados.get('NUM_PED', '')}"
-            )
+            referencia = f"{dados.get('NUMERO_NF', '')}-" f"{dados.get('NUM_PED', '')}"
 
-            print(
-                "[OS10] Informando referência após TFVsError: "
-                f"{referencia}"
-            )
+            print("[OS10] Informando referência após TFVsError: " f"{referencia}")
 
             pyautogui.write(
                 referencia,
@@ -2782,9 +2532,7 @@ def tratar_erro_tfvs_apos_ctrl_s_pagamento(
 
             _sleep(1)
 
-            print(
-                "[OS10] CTRL+S novamente após tratamento TFVsError."
-            )
+            print("[OS10] CTRL+S novamente após tratamento TFVsError.")
 
             pyautogui.hotkey(
                 "ctrl",
@@ -2797,12 +2545,9 @@ def tratar_erro_tfvs_apos_ctrl_s_pagamento(
 
         _sleep(0.2)
 
-    print(
-        "[OS10] TFVsErrorDlg não encontrado após CTRL+S da duplicata."
-    )
+    print("[OS10] TFVsErrorDlg não encontrado após CTRL+S da duplicata.")
 
     return False
-
 
 
 def salvar_pagamento(
@@ -2816,17 +2561,11 @@ def salvar_pagamento(
     time.sleep(1)
 
     if tratar_erro_tfvs_apos_ctrl_s_pagamento(dados):
-        print(
-            "[OS10] Erro da duplicata tratado. "
-            "Continuando fluxo."
-        )
+        print("[OS10] Erro da duplicata tratado. " "Continuando fluxo.")
 
     if preencher_referencia_atencao_pagamento(dados):
 
-        print(
-            "[OS10] Referência preenchida. "
-            "Executando CTRL+S novamente."
-        )
+        print("[OS10] Referência preenchida. " "Executando CTRL+S novamente.")
 
         pyautogui.hotkey("ctrl", "s")
         time.sleep(1)
@@ -2837,7 +2576,6 @@ def salvar_pagamento(
         "[OS10] Primeiro CTRL + S enviado. "
         "Aguardando a tela Acerto Financeiro para o segundo CTRL + S."
     )
-
 
 
 def _janela_visivel_por_classe(class_name: str) -> int | None:
@@ -2862,17 +2600,9 @@ def _configuracao_e_504(dados: dict[str, str]) -> bool:
         if not valor:
             continue
 
-        print(
-            "[OS10] Validando configuração | "
-            f"{campo}={valor}"
-        )
+        print("[OS10] Validando configuração | " f"{campo}={valor}")
 
-        valor_normalizado = (
-            valor
-            .replace(" ", "")
-            .replace("-", "")
-            .upper()
-        )
+        valor_normalizado = valor.replace(" ", "").replace("-", "").upper()
 
         if valor_normalizado == "504":
             print("[OS10] Configuração 504 confirmada.")
@@ -2926,7 +2656,9 @@ def _clicar_primeiro_botao_toolbar_frota(hwnd: int) -> None:
             nivel = nivel.children(control_type="ToolBar")[0]
             botao = nivel.children(control_type="Button")[0]
 
-            print("[OS10] Clicando Button[1] pelo caminho UIA equivalente ao ClickWait.")
+            print(
+                "[OS10] Clicando Button[1] pelo caminho UIA equivalente ao ClickWait."
+            )
             botao.click_input()
             _sleep(1)
             return
@@ -2954,8 +2686,7 @@ def _clicar_primeiro_botao_toolbar_frota(hwnd: int) -> None:
 
     except Exception as exc:
         raise RuntimeError(
-            "Falha ao clicar no Button[1] da ToolBar em TFrGerarNFFrota: "
-            f"{exc}"
+            "Falha ao clicar no Button[1] da ToolBar em TFrGerarNFFrota: " f"{exc}"
         ) from exc
 
     raise RuntimeError(
@@ -2972,64 +2703,9 @@ def _ler_valor_campo_atual() -> str:
     return _get_clipboard_text().strip()
 
 
-
-
-
-def clicar_aba_acerto_financeiro(hwnd: int) -> None:
-    """
-    Clique da aba equivalente ao:
-    /Window[4]/Window/Tab/Pane/Tab/TabItem[2]
-
-    Usa a janela já aberta do Acerto Financeiro.
-    """
-
-    print(
-        "[OS10] ClickWait aba Acerto Financeiro | TabItem[2]"
-    )
-
-    try:
-        janela = Desktop(
-            backend="uia"
-        ).window(
-            handle=hwnd
-        )
-
-        janela.wait(
-            "exists visible",
-            timeout=10,
-        )
-
-        abas = janela.descendants(
-            control_type="TabItem"
-        )
-
-        print(
-            f"[OS10] TabItems encontrados: {len(abas)}"
-        )
-
-        if len(abas) < 2:
-            raise RuntimeError(
-                "TabItem[2] não encontrado no Acerto Financeiro."
-            )
-
-        abas[1].click_input()
-
-        _sleep(1)
-
-        print(
-            "[OS10] Aba TabItem[2] selecionada."
-        )
-
-    except Exception as exc:
-        raise RuntimeError(
-            "Falha ao clicar aba Acerto Financeiro: "
-            f"{exc}"
-        ) from exc
-
-
-
 def tratar_validacao_acerto_financeiro(
     nota: dict[str, Any],
+    somente_confirmar: bool = False,
 ) -> bool:
     """
     Trata:
@@ -3047,6 +2723,9 @@ def tratar_validacao_acerto_financeiro(
     - CTRL + DELETE;
     - CTRL + S;
     - Retorna para produtos.
+
+    Com somente_confirmar=True (ajuste de centavos), executa apenas o ENTER.
+    O CTRL + DELETE e o restante da sequência ficam a cargo do chamador.
     """
 
     prazo = time.time() + 5
@@ -3065,14 +2744,10 @@ def tratar_validacao_acerto_financeiro(
         _sleep(0.2)
 
     if not hwnd_validacao:
-        print(
-            "[OS10] Validação do Acerto Financeiro não apareceu."
-        )
+        print("[OS10] Validação do Acerto Financeiro não apareceu.")
         return False
 
-    print(
-        "[OS10] Validação do Acerto Financeiro encontrada."
-    )
+    print("[OS10] Validação do Acerto Financeiro encontrada.")
 
     win32gui.BringWindowToTop(hwnd_validacao)
     win32gui.SetForegroundWindow(hwnd_validacao)
@@ -3080,16 +2755,15 @@ def tratar_validacao_acerto_financeiro(
     _sleep(0.5)
 
     if win32gui.GetForegroundWindow() != hwnd_validacao:
-        raise RuntimeError(
-            "Validação do Acerto Financeiro não ficou em foco."
-        )
+        raise RuntimeError("Validação do Acerto Financeiro não ficou em foco.")
 
-    print(
-        "[OS10] ENTER na Validação do Acerto Financeiro."
-    )
+    print("[OS10] ENTER na Validação do Acerto Financeiro.")
     pyautogui.press("enter")
 
     _sleep(1)
+
+    if somente_confirmar:
+        return True
 
     print("[OS10] Comando: CTRL + DELETE")
     pyautogui.hotkey("ctrl", "delete")
@@ -3101,12 +2775,68 @@ def tratar_validacao_acerto_financeiro(
 
     _sleep(2)
 
-    print(
-        "[OS10] Retorno para tela de produtos após validação financeira."
-    )
+    print("[OS10] Retorno para tela de produtos após validação financeira.")
 
     return True
 
+
+def tratar_atencao_baixa_documentos_pendentes(timeout: int = 4) -> bool:
+    """
+    Trata, se aparecer:
+
+    Title:
+    Atenção sobre a baixa de documentos pendentes
+
+    Class:
+    #32770
+
+    Fluxo: foca a tela e confirma com ENTER. Se não aparecer dentro do
+    timeout, segue o fluxo normalmente.
+    """
+    titulo = "Atenção sobre a baixa de documentos pendentes"
+    prazo = time.time() + timeout
+    hwnd = None
+
+    while time.time() < prazo:
+        candidato = win32gui.FindWindow("#32770", titulo)
+
+        if candidato and win32gui.IsWindowVisible(candidato):
+            hwnd = candidato
+            break
+
+        _sleep(0.2)
+
+    if not hwnd:
+        print(
+            "[OS10] Tela 'Atenção sobre a baixa de documentos pendentes' "
+            "não apareceu. Seguindo fluxo."
+        )
+        return False
+
+    print(
+        "[OS10] Tela 'Atenção sobre a baixa de documentos pendentes' "
+        "encontrada."
+    )
+
+    try:
+        win32gui.BringWindowToTop(hwnd)
+        win32gui.SetForegroundWindow(hwnd)
+    except Exception:
+        pass
+
+    _sleep(0.5)
+
+    print("[OS10] ENTER na Atenção sobre a baixa de documentos pendentes.")
+    pyautogui.press("enter")
+    _sleep(1)
+
+    if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
+        raise RuntimeError(
+            "Tela 'Atenção sobre a baixa de documentos pendentes' "
+            "não fechou após ENTER."
+        )
+
+    return True
 
 
 def tratar_atencao_pagamento() -> None:
@@ -3142,9 +2872,7 @@ def _executar_fluxo_config_504(dados: dict[str, str]) -> None:
     tela_frota = _aguardar_janela_classe("TFrGerarNFFrota", timeout=15)
 
     if not tela_frota:
-        raise RuntimeError(
-            "Tela TFrGerarNFFrota nao apareceu apos o TAB do LOCALNF."
-        )
+        raise RuntimeError("Tela TFrGerarNFFrota nao apareceu apos o TAB do LOCALNF.")
 
     # Foca somente a janela TFrGerarNFFrota.
     # Não usa set_focus() em controles internos para não mudar
@@ -3161,9 +2889,7 @@ def _executar_fluxo_config_504(dados: dict[str, str]) -> None:
         win32gui.SetForegroundWindow(tela_frota)
 
     except Exception as exc:
-        raise RuntimeError(
-            f"Nao foi possivel focar TFrGerarNFFrota: {exc}"
-        ) from exc
+        raise RuntimeError(f"Nao foi possivel focar TFrGerarNFFrota: {exc}") from exc
 
     _sleep(1)
 
@@ -3283,7 +3009,6 @@ def _executar_fluxo_config_504(dados: dict[str, str]) -> None:
     print("[OS10] Retornou para Nota Fiscal após fluxo Frota.")
 
 
-
 def _buscar_janela_advertencias_nota() -> int | None:
     """Return the visible Nota Fiscal warnings/inconsistencies window."""
     encontrada: int | None = None
@@ -3300,17 +3025,11 @@ def _buscar_janela_advertencias_nota() -> int | None:
         titulo = win32gui.GetWindowText(hwnd).strip()
         titulo_normalizado = normalizar_titulo(titulo)
 
-        if (
-            "advertencias" in titulo_normalizado
-            and "nota fiscal" in titulo_normalizado
-        ):
+        if "advertencias" in titulo_normalizado and "nota fiscal" in titulo_normalizado:
             encontrada = hwnd
             return
 
-        if (
-            "inconsistencias encontradas em nota fiscal"
-            in titulo_normalizado
-        ):
+        if "inconsistencias encontradas em nota fiscal" in titulo_normalizado:
             encontrada = hwnd
 
     win32gui.EnumWindows(enum_window, None)
@@ -3332,8 +3051,7 @@ def _fechar_advertencias_nota_se_existir() -> bool:
     titulo = win32gui.GetWindowText(hwnd).strip()
 
     print(
-        "[OS10] Tela de Advertências/Inconsistências encontrada | "
-        f"TITULO={titulo}"
+        "[OS10] Tela de Advertências/Inconsistências encontrada | " f"TITULO={titulo}"
     )
 
     try:
@@ -3343,19 +3061,12 @@ def _fechar_advertencias_nota_se_existir() -> bool:
 
     _sleep(0.3)
 
-    print(
-        "[OS10] Tentando fechar Advertências/Inconsistências com ESC."
-    )
+    print("[OS10] Tentando fechar Advertências/Inconsistências com ESC.")
     pyautogui.press("esc")
     _sleep(0.7)
 
-    if not (
-        win32gui.IsWindow(hwnd)
-        and win32gui.IsWindowVisible(hwnd)
-    ):
-        print(
-            "[OS10] Advertências/Inconsistências fechada com ESC."
-        )
+    if not (win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd)):
+        print("[OS10] Advertências/Inconsistências fechada com ESC.")
         return True
 
     botao_fechar: int | None = None
@@ -3378,35 +3089,24 @@ def _fechar_advertencias_nota_se_existir() -> bool:
     )
 
     if botao_fechar:
-        left, top, right, bottom = win32gui.GetWindowRect(
-            botao_fechar
-        )
+        left, top, right, bottom = win32gui.GetWindowRect(botao_fechar)
 
         x = left + ((right - left) // 2)
         y = top + ((bottom - top) // 2)
 
         print(
-            "[OS10] Clicando no botão Fechar da tela "
-            "Advertências/Inconsistências."
+            "[OS10] Clicando no botão Fechar da tela " "Advertências/Inconsistências."
         )
 
         pyautogui.click(x, y)
         _sleep(0.8)
 
-    fechou = not (
-        win32gui.IsWindow(hwnd)
-        and win32gui.IsWindowVisible(hwnd)
-    )
+    fechou = not (win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd))
 
     if fechou:
-        print(
-            "[OS10] Advertências/Inconsistências fechada."
-        )
+        print("[OS10] Advertências/Inconsistências fechada.")
     else:
-        print(
-            "[OS10] Não foi possível fechar "
-            "Advertências/Inconsistências."
-        )
+        print("[OS10] Não foi possível fechar " "Advertências/Inconsistências.")
 
     return fechou
 
@@ -3438,17 +3138,13 @@ def _validar_nota_fiscal_apos_salvar(
             if not confirmar_atencao_se_existir(timeout=1):
                 break
 
-            print(
-                "[OS10] Popup após CTRL + S confirmado com ENTER."
-            )
+            print("[OS10] Popup após CTRL + S confirmado com ENTER.")
             _sleep(0.4)
 
         tela_advertencias = _buscar_janela_advertencias_nota()
 
         if tela_advertencias:
-            titulo_advertencias = win32gui.GetWindowText(
-                tela_advertencias
-            ).strip()
+            titulo_advertencias = win32gui.GetWindowText(tela_advertencias).strip()
 
             ultimo_detalhe = (
                 "Tela de Advertências/Inconsistências ainda aberta: "
@@ -3469,9 +3165,7 @@ def _validar_nota_fiscal_apos_salvar(
         )
 
         if not tela_nota:
-            ultimo_detalhe = (
-                "TFNfCab não foi encontrada."
-            )
+            ultimo_detalhe = "TFNfCab não foi encontrada."
 
             print(
                 "[OS10] Nota Fiscal não encontrada | "
@@ -3482,21 +3176,15 @@ def _validar_nota_fiscal_apos_salvar(
             continue
 
         try:
-            win32gui.SetForegroundWindow(
-                tela_nota
-            )
+            win32gui.SetForegroundWindow(tela_nota)
         except Exception:
             pass
 
         _sleep(0.7)
 
         janela_ativa = win32gui.GetForegroundWindow()
-        classe_ativa = win32gui.GetClassName(
-            janela_ativa
-        )
-        titulo_ativo = win32gui.GetWindowText(
-            janela_ativa
-        ).strip()
+        classe_ativa = win32gui.GetClassName(janela_ativa)
+        titulo_ativo = win32gui.GetWindowText(janela_ativa).strip()
 
         print(
             "[OS10] Conferência da janela após CTRL + S | "
@@ -3508,14 +3196,12 @@ def _validar_nota_fiscal_apos_salvar(
             # Confere mais uma vez que nenhum modal apareceu após o foco.
             if not _buscar_janela_advertencias_nota():
                 print(
-                    "[OS10] Nota Fiscal confirmada e pronta "
-                    "para continuar o fluxo."
+                    "[OS10] Nota Fiscal confirmada e pronta " "para continuar o fluxo."
                 )
                 return tela_nota
 
         ultimo_detalhe = (
-            f"Janela ativa: CLASS={classe_ativa} | "
-            f"TITULO={titulo_ativo}"
+            f"Janela ativa: CLASS={classe_ativa} | " f"TITULO={titulo_ativo}"
         )
 
         print(
@@ -3587,9 +3273,7 @@ def fechar_telas_lancamento() -> None:
     for class_name in classes_para_fechar:
         hwnd = _janela_visivel_por_classe(class_name)
         if hwnd:
-            telas_restantes.append(
-                win32gui.GetWindowText(hwnd).strip() or class_name
-            )
+            telas_restantes.append(win32gui.GetWindowText(hwnd).strip() or class_name)
 
     if telas_restantes:
         raise RuntimeError(
@@ -3628,10 +3312,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     #     AGUARDA ACERTO FINANCEIRO
     # ========================================================
 
-    print(
-        "[OS10] Aguardando Acerto Financeiro "
-        "após o primeiro CTRL + S."
-    )
+    print("[OS10] Aguardando Acerto Financeiro " "após o primeiro CTRL + S.")
 
     tela_acerto = _aguardar_janela_classe(
         "TFAcertoFinanceiro",
@@ -3640,8 +3321,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
 
     if not tela_acerto:
         raise RuntimeError(
-            "Tela Acerto Financeiro não apareceu "
-            "após o primeiro CTRL + S."
+            "Tela Acerto Financeiro não apareceu " "após o primeiro CTRL + S."
         )
 
     titulo_acerto = win32gui.GetWindowText(tela_acerto).strip()
@@ -3660,9 +3340,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
             )
             _sleep(0.3)
 
-        win32gui.SetForegroundWindow(
-            tela_acerto
-        )
+        win32gui.SetForegroundWindow(tela_acerto)
 
     except Exception:
         focar_janela_por_titulo(
@@ -3676,10 +3354,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # 2 - SEGUNDO CTRL + S NO ACERTO FINANCEIRO
     # ========================================================
 
-    print(
-        "[OS10] Acerto Financeiro focado. "
-        "Enviando segundo CTRL + S."
-    )
+    print("[OS10] Acerto Financeiro focado. " "Enviando segundo CTRL + S.")
 
     pyautogui.hotkey(
         "ctrl",
@@ -3690,22 +3365,15 @@ def _finalizar_acerto_financeiro_pos_pagamento(
 
     tratar_validacao_acerto_financeiro(dados)
 
-    if confirmar_atencao_se_existir(
-        timeout=2
-    ):
-        print(
-            "[OS10] Atenção após segundo CTRL + S confirmada."
-        )
+    if confirmar_atencao_se_existir(timeout=2):
+        print("[OS10] Atenção após segundo CTRL + S confirmada.")
         _sleep(0.5)
 
     # ========================================================
     # 3 - DEPOIS DO SEGUNDO CTRL+S DEVE VOLTAR PARA TFNfCab
     # ========================================================
 
-    print(
-        "[OS10] Aguardando retorno para Nota Fiscal | "
-        "CLASS=TFNfCab"
-    )
+    print("[OS10] Aguardando retorno para Nota Fiscal | " "CLASS=TFNfCab")
 
     tela_nota = _aguardar_janela_classe(
         "TFNfCab",
@@ -3723,9 +3391,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
             "Nenhum retorno esperado após Acerto Financeiro. Agro reiniciado."
         )
 
-    titulo_nota = win32gui.GetWindowText(
-        tela_nota
-    ).strip()
+    titulo_nota = win32gui.GetWindowText(tela_nota).strip()
 
     print(
         "[OS10] Nota Fiscal encontrada após segundo CTRL + S | "
@@ -3737,9 +3403,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # 4 - FOCA TFNfCab ANTES DO ALT+I
     # ========================================================
 
-    print(
-        "[OS10] Focando Nota Fiscal antes do ALT + I."
-    )
+    print("[OS10] Focando Nota Fiscal antes do ALT + I.")
 
     try:
         if win32gui.IsIconic(tela_nota):
@@ -3749,9 +3413,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
             )
             _sleep(0.3)
 
-        win32gui.SetForegroundWindow(
-            tela_nota
-        )
+        win32gui.SetForegroundWindow(tela_nota)
 
     except Exception:
         if not focar_janela_por_titulo(
@@ -3759,8 +3421,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
             timeout=5,
         ):
             raise RuntimeError(
-                "Não foi possível focar a tela Nota Fiscal "
-                "antes do ALT + I."
+                "Não foi possível focar a tela Nota Fiscal " "antes do ALT + I."
             )
 
     _sleep(0.8)
@@ -3779,9 +3440,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     if classe_ativa != "TFNfCab":
         # Faz uma última tentativa de foco antes de bloquear o fluxo.
         try:
-            win32gui.SetForegroundWindow(
-                tela_nota
-            )
+            win32gui.SetForegroundWindow(tela_nota)
             _sleep(0.5)
         except Exception:
             pass
@@ -3800,9 +3459,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # 5 - AGORA SIM ALT + I
     # ========================================================
 
-    print(
-        "[OS10] Nota Fiscal focada. Comando: ALT + I"
-    )
+    print("[OS10] Nota Fiscal focada. Comando: ALT + I")
 
     pyautogui.hotkey(
         "alt",
@@ -3812,9 +3469,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # Aguarda a aba/tela terminar de responder ao ALT + I.
     _sleep(1.5)
 
-    print(
-        "[OS10] Comando: SHIFT + TAB"
-    )
+    print("[OS10] Comando: SHIFT + TAB")
 
     pyautogui.hotkey(
         "shift",
@@ -3824,30 +3479,20 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # Dá tempo para o foco estabilizar antes de navegar para a direita.
     _sleep(1.0)
 
-    print(
-        "[OS10] Comando: RIGHT 3x"
-    )
+    print("[OS10] Comando: RIGHT 3x")
 
     for indice in range(1, 4):
-        print(
-            f"[OS10] Comando: RIGHT {indice}/3"
-        )
+        print(f"[OS10] Comando: RIGHT {indice}/3")
 
-        pyautogui.press(
-            "right"
-        )
+        pyautogui.press("right")
 
         _sleep(0.5)
 
     _sleep(0.5)
 
-    print(
-        "[OS10] Comando: TAB"
-    )
+    print("[OS10] Comando: TAB")
 
-    pyautogui.press(
-        "tab"
-    )
+    pyautogui.press("tab")
 
     _sleep(0.3)
 
@@ -3855,22 +3500,16 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # 6 - LOCALNF
     # ========================================================
 
-    print(
-        f"[OS10] Informando LOCALNF: {local_nf}"
-    )
+    print(f"[OS10] Informando LOCALNF: {local_nf}")
 
     _write_value(
         "LOCALNF",
         local_nf,
     )
 
-    print(
-        "[OS10] Comando: TAB"
-    )
+    print("[OS10] Comando: TAB")
 
-    pyautogui.press(
-        "tab"
-    )
+    pyautogui.press("tab")
 
     _sleep(0.5)
 
@@ -3880,17 +3519,10 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # Todas as configurações seguem o mesmo fluxo até aqui.
     # A única diferença é depois do LOCALNF.
 
-    if _configuracao_e_504(
-        dados
-    ):
-        print(
-            "[OS10] Configuração 504 detectada. "
-            "Executando fluxo Frota."
-        )
+    if _configuracao_e_504(dados):
+        print("[OS10] Configuração 504 detectada. " "Executando fluxo Frota.")
 
-        _executar_fluxo_config_504(
-            dados
-        )
+        _executar_fluxo_config_504(dados)
     else:
         print(
             "[OS10] Configuração diferente de 504. "
@@ -3901,9 +3533,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # 8 - CONTINUA FLUXO IGUAL PARA TODAS AS CONFIGURAÇÕES
     # ========================================================
 
-    print(
-        "[OS10] Comando: ALT + E"
-    )
+    print("[OS10] Comando: ALT + E")
 
     pyautogui.hotkey(
         "alt",
@@ -3912,9 +3542,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
 
     _sleep(0.5)
 
-    print(
-        "[OS10] Comando: TAB 2x"
-    )
+    print("[OS10] Comando: TAB 2x")
 
     pyautogui.press(
         "tab",
@@ -3924,9 +3552,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
 
     _sleep(0.3)
 
-    print(
-        f"[OS10] Informando NUM_PED: {numero_pedido}"
-    )
+    print(f"[OS10] Informando NUM_PED: {numero_pedido}")
 
     _write_value(
         "NUM_PED",
@@ -3937,9 +3563,7 @@ def _finalizar_acerto_financeiro_pos_pagamento(
     # 9 - SALVAMENTO FINAL
     # ========================================================
 
-    print(
-        "[OS10] Comando: CTRL + S final"
-    )
+    print("[OS10] Comando: CTRL + S final")
 
     pyautogui.hotkey(
         "ctrl",
@@ -3951,12 +3575,8 @@ def _finalizar_acerto_financeiro_pos_pagamento(
 
     tratar_tf_form_erros_final(dados)
 
-    if confirmar_atencao_se_existir(
-        timeout=2
-    ):
-        print(
-            "[OS10] Atenção após CTRL + S final confirmada."
-        )
+    if confirmar_atencao_se_existir(timeout=2):
+        print("[OS10] Atenção após CTRL + S final confirmada.")
         _sleep(1)
 
     # ========================================================
@@ -3986,50 +3606,12 @@ def processar_pagamento_tela_aberta(
     elif tipo_pgto == "P":
         preencher_pix(pedido)
     elif tipo_pgto == "A":
-        print(
-            "[OS10] Tipo de pagamento A. "
-            "Nenhuma ação financeira necessária."
-        )
+        print("[OS10] Tipo de pagamento A. " "Nenhuma ação financeira necessária.")
     else:
         raise ValueError(f"TIPOPGTO não mapeado: {tipo_pgto}")
 
     salvar_pagamento(dados)
     _finalizar_acerto_financeiro_pos_pagamento(dados)
-
-
-def executar_acerto_financeiro(pedido: dict) -> None:
-    """Standalone version of the supplied financial flow."""
-    tipo_pgto = str(pedido["tipopgto"]).strip().upper()
-
-    focar_janela_por_titulo("Nota Fiscal", timeout=30)
-
-    pressionar_alt_a()
-    time.sleep(2)
-
-    validar_tela_valores_pendentes(pedido, timeout=3)
-
-    if not tela_pagamento_duplicatas_aberta():
-        raise RuntimeError("Tela 'Pagamento com Duplicatas' não abriu.")
-
-    focar_janela_por_titulo("Pagamento com Duplicatas", timeout=30)
-    clicar_regiao_pagamento()
-
-    if tipo_pgto == "B":
-        preencher_boleto(pedido)
-    elif tipo_pgto == "D":
-        preencher_deposito(pedido)
-    elif tipo_pgto == "P":
-        preencher_pix(pedido)
-    elif tipo_pgto == "A":
-        print(
-            "[OS10] Tipo de pagamento A. "
-            "Nenhuma ação financeira necessária."
-        )
-    else:
-        raise ValueError(f"TIPOPGTO não mapeado: {tipo_pgto}")
-
-    salvar_pagamento()
-
 
 
 def tratar_confirma_imposto(hwnd: int) -> None:
@@ -4067,24 +3649,17 @@ def tratar_confirma_imposto(hwnd: int) -> None:
         win32gui.SetForegroundWindow(hwnd)
 
     except Exception as exc:
-        raise RuntimeError(
-            f"Não foi possível focar Confirma Imposto: {exc}"
-        )
+        raise RuntimeError(f"Não foi possível focar Confirma Imposto: {exc}")
 
     _sleep(1)
 
     hwnd_ativo = win32gui.GetForegroundWindow()
     classe_ativa = win32gui.GetClassName(hwnd_ativo)
 
-    print(
-        "[OS10] Foco Confirma Imposto | "
-        f"CLASS_ATIVA={classe_ativa}"
-    )
+    print("[OS10] Foco Confirma Imposto | " f"CLASS_ATIVA={classe_ativa}")
 
     if classe_ativa != "TFRes":
-        raise RuntimeError(
-            "Confirma Imposto encontrada, mas não ficou ativa."
-        )
+        raise RuntimeError("Confirma Imposto encontrada, mas não ficou ativa.")
 
     print("[OS10] Confirma Imposto: LEFT 2x")
 
@@ -4110,18 +3685,11 @@ def tratar_confirma_imposto(hwnd: int) -> None:
     if (
         hwnd_verificacao
         and win32gui.IsWindowVisible(hwnd_verificacao)
-        and "Confirma Imposto"
-        in win32gui.GetWindowText(hwnd_verificacao)
+        and "Confirma Imposto" in win32gui.GetWindowText(hwnd_verificacao)
     ):
-        raise RuntimeError(
-            "Confirma Imposto não fechou após confirmação."
-        )
+        raise RuntimeError("Confirma Imposto não fechou após confirmação.")
 
-    print(
-        "[OS10] Confirma Imposto fechada. "
-        "Continuando fluxo."
-    )
-
+    print("[OS10] Confirma Imposto fechada. " "Continuando fluxo.")
 
 
 def validar_telas_inesperadas(
@@ -4176,38 +3744,24 @@ def validar_telas_inesperadas(
         titulo = tela["titulo"]
         classe = tela["classe"]
 
-        print(
-            "[OS10] Tela detectada | "
-            f"CLASS={classe} | "
-            f"TITULO={titulo}"
-        )
+        print("[OS10] Tela detectada | " f"CLASS={classe} | " f"TITULO={titulo}")
 
-        if (
-            classe == "TFRes"
-            and "Confirma Imposto" in titulo
-        ):
-            print(
-                "[OS10] Confirma Imposto detectada."
-            )
+        if classe == "TFRes" and "Confirma Imposto" in titulo:
+            print("[OS10] Confirma Imposto detectada.")
 
-            tratar_confirma_imposto(
-                hwnd
-            )
+            tratar_confirma_imposto(hwnd)
 
             return
 
-        if (
-            classe == "TFFormErros"
-        ):
+        if classe == "TFFormErros":
             screenshot = tirar_print_erro(nota)
 
-            raise RuntimeError(
+            raise ErroComPrint(
                 "Tela de erro encontrada | "
                 f"CLASS={classe} | "
-                f"TITULO={titulo} | "
-                f"SCREENSHOT={screenshot}"
+                f"TITULO={titulo}",
+                screenshot,
             )
-
 
 
 def tratar_tf_form_erros_final(
@@ -4233,9 +3787,7 @@ def tratar_tf_form_erros_final(
     if not hwnd or not win32gui.IsWindowVisible(hwnd):
         return
 
-    print(
-        "[OS10] Tela TFFormErros encontrada após CTRL+S final."
-    )
+    print("[OS10] Tela TFFormErros encontrada após CTRL+S final.")
 
     try:
         win32gui.SetForegroundWindow(hwnd)
@@ -4246,26 +3798,16 @@ def tratar_tf_form_erros_final(
 
     screenshot_path = tirar_print_erro(nota)
 
-    print(
-        "[OS10] Screenshot TFFormErros salvo: "
-        f"{screenshot_path}"
-    )
+    print("[OS10] Screenshot TFFormErros salvo: " f"{screenshot_path}")
 
-    print(
-        "[OS10] Reiniciando Agro após inconsistências da Nota Fiscal."
-    )
+    print("[OS10] Reiniciando Agro após inconsistências da Nota Fiscal.")
 
     reiniciar_agro()
 
-    raise RuntimeError(
-        "Advertências/Inconsistências encontradas em Nota Fiscal. "
-        "Agro reiniciado."
+    raise ErroComPrint(
+        "Advertências/Inconsistências encontradas em Nota Fiscal. " "Agro reiniciado.",
+        screenshot_path,
     )
-
-
-
-
-
 
 
 def lancar_nota(
@@ -4420,10 +3962,7 @@ def lancar_nota(
     _voltar_grid()
     _sleep(0.5)
 
-    validar_csll(
-        dados,
-        decisao_retencao["CSLL"]
-    )
+    validar_csll(dados, decisao_retencao["CSLL"])
 
     validar_telas_inesperadas(nota)
 
@@ -4441,10 +3980,7 @@ def lancar_nota(
 
     print("[OS10] INICIANDO ISS")
 
-    validar_iss(
-        dados,
-        decisao_retencao["ISS"]
-    )
+    validar_iss(dados, decisao_retencao["ISS"])
 
     print("[OS10] FINALIZOU ISS")
     _sleep(0.5)
@@ -4501,9 +4037,7 @@ def lancar_nota(
     if not campo_total_produtos:
         raise RuntimeError("Campo Total Produtos não encontrado.")
 
-    total_produtos = win32gui.GetWindowText(
-        campo_total_produtos
-    ).strip()
+    total_produtos = win32gui.GetWindowText(campo_total_produtos).strip()
 
     (
         valor_esperado_duplicata,
@@ -4564,7 +4098,11 @@ def lancar_nota(
 
         # Aguarda a validação do Acerto Financeiro antes de continuar.
         # Essa tela faz parte do ajuste de centavos.
-        if not tratar_validacao_acerto_financeiro(dados):
+        # Somente ENTER: o CTRL + DEL e o CTRL + F4 vêm logo abaixo.
+        if not tratar_validacao_acerto_financeiro(
+            dados,
+            somente_confirmar=True,
+        ):
             print(
                 "[OS10] Validação do Acerto Financeiro não apareceu. "
                 "Continuando fluxo de ajuste."
@@ -4579,101 +4117,65 @@ def lancar_nota(
         pyautogui.hotkey("ctrl", "f4")
         _sleep(1)
 
-        print("[OS10] Retornando para Produtos após fechar Acerto Financeiro.")
+        print("[OS10] Retornando para Nota Fiscal após fechar Acerto Financeiro.")
 
-        print("[OS10] Foco retornou para Acerto Financeiro.")
+        # ==============================
+        # FOCA A NOTA FISCAL
+        # ==============================
 
-        print("[OS10] Foco retornou para Acerto Financeiro.")
+        tela_nota = _aguardar_janela_classe("TFNfCab", timeout=10)
 
-        hwnd_acerto = win32gui.FindWindow(
-            "TFAcertoFinanceiro",
-            None,
-        )
-
-        if not hwnd_acerto or not win32gui.IsWindowVisible(hwnd_acerto):
+        if not tela_nota:
             raise RuntimeError(
-                "Tela Acerto Financeiro não está visível antes do ALT+G."
+                "Tela Nota Fiscal não encontrada após fechar Acerto Financeiro."
             )
 
         try:
-            win32gui.SetForegroundWindow(
-                hwnd_acerto
-            )
+            win32gui.SetForegroundWindow(tela_nota)
         except Exception:
             pass
 
         _sleep(1)
 
-        hwnd_ativo = win32gui.GetForegroundWindow()
-        classe_ativa = win32gui.GetClassName(hwnd_ativo)
-        titulo_ativo = win32gui.GetWindowText(hwnd_ativo).strip()
+        classe_ativa = win32gui.GetClassName(win32gui.GetForegroundWindow())
 
-        print(
-            "[OS10] Conferência antes ALT+G | "
-            f"CLASS={classe_ativa} | "
-            f"TITULO={titulo_ativo}"
-        )
+        print("[OS10] Conferência antes ALT+G | " f"CLASS={classe_ativa}")
 
-        if classe_ativa != "TFAcertoFinanceiro":
+        if classe_ativa != "TFNfCab":
             raise RuntimeError(
-                "Acerto Financeiro encontrado, mas não ficou ativo antes do ALT+G."
+                "Nota Fiscal encontrada, mas não ficou ativa antes do ALT+G. "
+                f"CLASS ativa={classe_ativa}"
             )
 
-        print(
-            "[OS10] Acerto Financeiro confirmado. "
-            "Aguardando 4 segundos antes do ALT+G."
-        )
-
-        _sleep(4)
-
-        hwnd_atual = win32gui.GetForegroundWindow()
-
-        print(
-            "[OS10] Janela antes ALT+G | "
-            f"CLASS={win32gui.GetClassName(hwnd_atual)} | "
-            f"TITULO={win32gui.GetWindowText(hwnd_atual)}"
-        )
-
         print("[OS10] Comando: ALT + G")
-        pyautogui.hotkey(
-            "alt",
-            "g",
-        )
+        pyautogui.hotkey("alt", "g")
         _sleep(1)
 
-        print("[OS10] Comando: RIGHT")
-        pyautogui.press(
-            "right",
-        )
-        _sleep(1)
+        # print("[OS10] Comando: SHIFT + TAB 8x")
+        # for _ in range(8):
+        #     pyautogui.hotkey("shift", "tab")
+        #     _sleep(0.3)
 
-        print("[OS10] Comando: TAB 2x")
-        pyautogui.press(
-            "tab",
-            presses=2,
-            interval=0.3,
-        )
-        _sleep(1)
-
-        # ==============================
-        # CHEGANDO NA TELA DE IMPOSTO
-        # ==============================
-
-        tela_nota = win32gui.FindWindow("TFNfCab", "Nota Fiscal")
-
-        if not tela_nota:
-            raise RuntimeError("Tela Nota Fiscal não encontrada.")
-
-        win32gui.SetForegroundWindow(tela_nota)
+        print("[OS10] Comando: SHIFT + TAB")
+        pyautogui.hotkey("shift", "tab")
         _sleep(0.3)
 
-        print("[OS10] Fluxo ALT+G aplicado antes do ajuste.")
+        print("[OS10] Comando: TAB")
+        pyautogui.press("tab")
+        _sleep(1)
 
         print("[OS10] Comando: DOWN 4x")
         pyautogui.press("down", presses=4, interval=0.2)
         _sleep(0.2)
 
-        ajustar_centavos_pis_cofins_csll(diferenca)
+        # Sinal da diferença: tela - esperado.
+        # Tela maior que o esperado: soma nos impostos. Tela menor: subtrai.
+        diferenca_assinada = round(
+            round(_to_float(total_produtos), 2) - valor_esperado_duplicata,
+            2,
+        )
+
+        ajustar_centavos_pis_cofins_csll(diferenca_assinada)
 
         for _ in range(2):
             print("[OS10] Comando: ALT + T")
@@ -4683,6 +4185,10 @@ def lancar_nota(
         print("[OS10] Comando: ALT + A")
         pyautogui.hotkey("alt", "a")
         _sleep(1)
+
+        # Pode aparecer após o ajuste. Se aparecer, ENTER e o
+        # Pagamento com Duplicatas reabre para a nova validação.
+        tratar_atencao_baixa_documentos_pendentes()
 
         validar_tela_valores_pendentes(
             pedido_financeiro,
@@ -4715,9 +4221,7 @@ def lancar_nota(
                 "Campo Total Produtos não encontrado após ajuste de centavos."
             )
 
-        total_produtos_ajustado = win32gui.GetWindowText(
-            campo_total_produtos
-        ).strip()
+        total_produtos_ajustado = win32gui.GetWindowText(campo_total_produtos).strip()
 
         (
             valor_esperado_ajustado,
@@ -4751,8 +4255,6 @@ def lancar_nota(
             "ajuste de centavos. Seguindo fluxo."
         )
 
-   
-
     # ==============================
     # FLUXO DE PAGAMENTO INTEGRADO
     # ==============================
@@ -4763,58 +4265,6 @@ def lancar_nota(
         pedido=pedido_financeiro,
         dados=dados,
     )
-
-
-def _confirmar_atencao_recomendacao(timeout: int) -> bool:
-    """Confirm payment recommendation warning when it appears."""
-    timeout_final = time.time() + timeout
-
-    while time.time() < timeout_final:
-        tela_atencao = win32gui.FindWindow(
-            "#32770",
-            "Atenção",
-        )
-
-        if tela_atencao and win32gui.IsWindowVisible(tela_atencao):
-            texto_hwnd = _find_child_by_class_instance(
-                parent_hwnd=tela_atencao,
-                class_name="Static",
-                instance=2,
-            )
-
-            texto = ""
-
-            if texto_hwnd:
-                texto = win32gui.GetWindowText(texto_hwnd).strip()
-
-            if "É Recomendável que as informações" in texto:
-                botao_hwnd = _find_child_by_class_instance(
-                    parent_hwnd=tela_atencao,
-                    class_name="Button",
-                    instance=1,
-                )
-
-                if not botao_hwnd:
-                    raise RuntimeError(
-                        "Botão da tela Atenção não encontrado."
-                    )
-
-                print("[OS10] Confirmando tela Atenção.")
-                win32gui.PostMessage(
-                    botao_hwnd,
-                    win32con.BM_CLICK,
-                    0,
-                    0,
-                )
-                _sleep(0.1)
-
-                return True
-
-            return False
-
-        _sleep(0.1)
-
-    return False
 
 
 def _aguardar_janela_classe(

@@ -97,7 +97,7 @@ def buscar_notas_pendentes(connection: oracledb.Connection) -> list[dict[str, An
         AND TO_DATE(t.VENCIMENTO, 'DD/MM/YYYY') <> TRUNC(SYSDATE) -- OK somente se o vencimento é diferente dia de hoje (Solicitação da Julia)
 
         --AND t.VALOR_RETENCAO = 0
-         AND NUM_PED = 1040
+        --AND NUM_PED = 63
 
         ORDER BY
             CASE
@@ -113,34 +113,3 @@ def buscar_notas_pendentes(connection: oracledb.Connection) -> list[dict[str, An
         columns = [column[0] for column in cursor.description]
 
         return [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
-
-
-def buscar_estab_logado(connection: oracledb.Connection) -> int:
-    """Fetch the active establishment logged for the robot user."""
-    sql = """
-        SELECT estab AS establogados
-        FROM pmodulolicuso
-        WHERE userid = 'RPA.OS10'
-          AND status = 'A'
-
-        UNION ALL
-
-        SELECT 0 AS establogados
-        FROM dual
-        WHERE NOT EXISTS (
-            SELECT 1
-            FROM pmodulolicuso
-            WHERE userid = 'RPA.OS10'
-              AND status = 'A'
-        )
-    """
-
-    with connection.cursor() as cursor:
-        cursor.execute(sql)
-        row = cursor.fetchone()
-
-        if not row:
-            return 0
-
-        return int(row[0])
- 

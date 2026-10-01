@@ -157,24 +157,6 @@ def wait_window_startswith(
     return janela is not None
 
 
-def focus_window(
-    title_prefix: str,
-) -> bool:
-    """
-    Focus first window matching title prefix.
-    """
-
-    janela = find_window_startswith(
-        title=title_prefix,
-        timeout_seconds=2,
-    )
-
-    if janela is None:
-        return False
-
-    return True
-
-
 def switch_establishment(
     estab: int | str,
     main_title: str = "AGRO-",
